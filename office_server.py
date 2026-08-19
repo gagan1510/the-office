@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local smallcase server: serves the UI and runs Claude/Codex workers."""
+"""Local The Office server: serves the UI and runs Claude/Codex workers."""
 
 from __future__ import annotations
 
@@ -648,7 +648,7 @@ def public_run(run: dict, since: int = 0) -> dict:
 
 
 class OfficeHandler(BaseHTTPRequestHandler):
-    server_version = "smallcase/1.0"
+    server_version = "TheOffice/1.0"
 
     def log_message(self, format: str, *args) -> None:
         print(f"[{self.log_date_time_string()}] {format % args}")
@@ -794,11 +794,11 @@ class OfficeHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve smallcase and run local Claude/Codex agents.")
+    parser = argparse.ArgumentParser(description="Serve The Office and run local Claude/Codex agents.")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), OfficeHandler)
-    print(f"smallcase: http://127.0.0.1:{args.port}")
+    print(f"the office: http://127.0.0.1:{args.port}")
     print(f"Codex: {find_cli('codex') or 'not found'}")
     print(f"Claude: {find_cli('claude') or 'not found'}")
     try:

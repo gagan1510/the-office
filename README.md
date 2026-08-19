@@ -1,10 +1,10 @@
-# smallcase
+# the office
 
-smallcase is a local-first browser interface for coordinating coding work through the Claude Code and Codex CLIs. Each repository is represented as a floor with a user-named Manager & Tech Lead, a persistent agent session, and a permanent team of five employees.
+the office is a local-first browser interface for coordinating coding work through the Claude Code and Codex CLIs. Each repository is represented as a floor with a user-named Manager & Tech Lead, a persistent agent session, and a permanent team of five employees.
 
 The application runs entirely on your computer. The Python server listens only on `127.0.0.1`, launches your locally installed agent CLIs, and gives them access to repositories you explicitly onboard.
 
-![smallcase showing a repository floor with its manager, codebase chat, and five permanent employees](assets/smallcase.png)
+![the office showing a repository floor with its manager, codebase chat, and five permanent employees](assets/the-office.png)
 
 ## Features
 
@@ -35,7 +35,7 @@ The application runs entirely on your computer. The Python server listens only o
   - Claude Code, authenticated with the user's local Claude account or a valid API key
   - Codex CLI, authenticated locally
 - A modern browser
-- GitHub CLI (`gh`) authenticated with GitHub, only if you want smallcase to create pull requests
+- GitHub CLI (`gh`) authenticated with GitHub, only if you want the office to create pull requests
 
 There are no third-party Python packages. `requirements.txt` is intentionally empty apart from explanatory comments.
 
@@ -49,7 +49,7 @@ codex --version
 gh --version
 ```
 
-smallcase also searches common user installation locations such as `~/.local/bin`, npm global bins, Volta, Bun, and installed NVM versions.
+the office also searches common user installation locations such as `~/.local/bin`, npm global bins, Volta, Bun, and installed NVM versions.
 
 ## Installation
 
@@ -98,7 +98,7 @@ python3 office_server.py
 
 The server prints the detected Claude and Codex paths at startup.
 
-Claude normally uses the authentication available to the local CLI. If an inherited `ANTHROPIC_API_KEY` is rejected, smallcase retries once using the user's local Claude login. Codex Chat Room sessions are allowed to run from the non-Git smallcase directory and remain read-only.
+Claude normally uses the authentication available to the local CLI. If an inherited `ANTHROPIC_API_KEY` is rejected, the office retries once using the user's local Claude login. Codex Chat Room sessions are allowed to run from the non-Git application directory and remain read-only.
 
 ## Creating a floor
 
@@ -143,7 +143,7 @@ Nothing is pushed automatically. The publish action shows the proposed branch, c
 
 ## Repository push detection
 
-For every floor with an approved review, smallcase checks whether the current work has already been pushed. It considers:
+For every floor with an approved review, the office checks whether the current work has already been pushed. It considers:
 
 - working-tree changes;
 - commits ahead of the configured upstream;
@@ -191,7 +191,7 @@ Confirm the CLI runs in a terminal. If it is installed in a nonstandard location
 
 ### Claude reports an invalid API key
 
-An `ANTHROPIC_API_KEY` in the server environment may override the user's Claude login. smallcase automatically retries rejected keys with the local login. You can also remove the stale variable before startup:
+An `ANTHROPIC_API_KEY` in the server environment may override the user's Claude login. The office automatically retries rejected keys with the local login. You can also remove the stale variable before startup:
 
 ```sh
 unset ANTHROPIC_API_KEY
@@ -227,7 +227,7 @@ New runs return a concise failure reason directly in chat. Click the relevant pr
 
 ## Security and deployment model
 
-smallcase is designed as a personal local application, not a public web service:
+The office is designed as a personal local application, not a public web service:
 
 - It binds to `127.0.0.1` and has no user authentication.
 - Agent processes inherit the local user's filesystem permissions and selected CLI environment.

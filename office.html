@@ -477,15 +477,12 @@
     margin-top:8px; font-size:11px; color:#3a2c05; line-height:1.35; font-weight:600;
     background:var(--sticky); border:2px solid #000;
     padding:7px 8px; flex:1; white-space:pre-wrap; word-break:break-word;
+    text-align:left;
     position:relative;
-  }
-  .sticky-note.empty{
-    display:flex; align-items:center; justify-content:center;
-    text-align:center; white-space:normal;
   }
   .working-dot{
     display:inline-block; width:6px; height:6px; background:var(--working-dark);
-    margin-left:4px; animation: blink 1s steps(1) infinite; border:1px solid #000;
+    margin-left:4px; vertical-align:middle; animation: blink 1s steps(1) infinite; border:1px solid #000;
   }
   @keyframes blink{ 50%{ opacity:0.1; } }
   .queue-note{ font-size:10px; color:var(--ink-dim); margin-top:6px; font-weight:700; text-transform:uppercase; letter-spacing:.02em; }

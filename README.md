@@ -21,6 +21,7 @@ The application runs entirely on your computer. The Python server listens only o
 - View human-readable, live CLI activity by clicking a profile or worker.
 - See live employee phases such as reading code, editing files, running tests, building, reviewing, and coordinating delegated work.
 - Ask the floor lead questions about the onboarded codebase.
+- Request read-only implementation reports researched by one available employee.
 - Use the separate Chat Room for ordinary Claude or Codex conversations.
 - Review combined changes before publishing.
 - Push a branch and create a GitHub pull request only after explicit confirmation.
@@ -157,6 +158,20 @@ Checks refresh every 30 seconds. Once a clean current commit is confirmed on a r
 The **Chat Room** is separate from the office floors. Choose Claude or Codex and use it as a plain conversational assistant. Chat Room prompts prohibit repository edits and external actions.
 
 Each floor also has an **Ask _name_** section. Those answers come from the persistent floor session and include the repository context gathered during onboarding. Codebase questions are read-only and cannot be asked while the lead is handling another turn.
+
+## Reports
+
+Open **Reports** from a floor's Manager & Tech Lead card to ask how a feature, migration, integration, or architectural change should be implemented. The request stays attached to that floor and waits for one permanent employee to become available.
+
+The lead assigns exactly one employee to investigate the onboarded repository in read-only mode. The completed report includes:
+
+- an executive summary;
+- a recommended approach;
+- ordered implementation steps;
+- risks and tradeoffs; and
+- relevant repository files.
+
+Report work runs in that employee's independent Claude or Codex session, so the tech lead can continue analyzing and assigning normal floor work at the same time. It appears on the employee's desk and in the live activity log. The employee is returned to the available pool immediately after the report completes. Reports remain in the floor's local history and their summaries become part of the shared floor context for later questions and tasks.
 
 ## Logs
 

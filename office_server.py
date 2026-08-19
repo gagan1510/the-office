@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 1_000_000
+SUPPORTED_RUN_TYPES = ("work", "chat", "question", "onboard", "plan", "review", "orchestrate", "report")
 MAX_LOG_LINES = 5000
 lock = threading.RLock()
 clone_lock = threading.Lock()
@@ -62,6 +63,20 @@ REVIEW_SCHEMA = {
         "suggested_branch": {"type": "string"},
         "pr_title": {"type": "string"},
         "pr_body": {"type": "string"},
+    },
+}
+
+REPORT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "executive_summary", "recommendation", "implementation_steps", "risks", "relevant_files"],
+    "properties": {
+        "title": {"type": "string"},
+        "executive_summary": {"type": "string"},
+        "recommendation": {"type": "string"},
+        "implementation_steps": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+        "risks": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+        "relevant_files": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
     },
 }
 
@@ -452,7 +467,9 @@ def agent_command(
             command = [executable, "exec", "resume", "--json"]
             if run_type == "chat":
                 command += ["--skip-git-repo-check"]
-            if run_type in ("onboard", "plan", "review", "orchestrate"):
+            if run_type in ("question", "review", "report"):
+                command += ["-c", 'sandbox_mode="read-only"']
+            if run_type in ("onboard", "plan", "review", "orchestrate", "report"):
                 command += ["--output-schema", schema_path, "-o", output_path]
             return command + [session_id, prompt]
         command = [
@@ -460,11 +477,11 @@ def agent_command(
             "exec",
             "--json",
         ]
-        if run_type in ("review", "chat", "question"):
+        if run_type in ("review", "chat", "question", "report"):
             command += ["--sandbox", "read-only"]
             if run_type == "chat":
                 command += ["--skip-git-repo-check"]
-            if run_type == "review":
+            if run_type in ("review", "report"):
                 command += ["--output-schema", schema_path, "-o", output_path]
         else:
             # --approve-for-me already selects the workspace-write policy and cannot be
@@ -483,10 +500,10 @@ def agent_command(
             "--verbose",
             "--permission-mode",
         ]
-        command += ["plan" if run_type in ("review", "chat", "question") else "acceptEdits"]
+        command += ["plan" if run_type in ("review", "chat", "question", "report") else "acceptEdits"]
         if run_type == "chat":
             command += ["--tools", ""]
-        if run_type in ("onboard", "plan", "review", "orchestrate"):
+        if run_type in ("onboard", "plan", "review", "orchestrate", "report"):
             command += ["--json-schema", json.dumps(output_schema)]
         if session_id:
             command += ["--resume", session_id]
@@ -503,6 +520,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             ONBOARD_SCHEMA if run["runType"] == "onboard"
             else PLAN_SCHEMA if run["runType"] == "plan"
             else REVIEW_SCHEMA if run["runType"] in ("review", "orchestrate")
+            else REPORT_SCHEMA if run["runType"] == "report"
             else None
         )
         if output_schema and run["agent"] == "codex":
@@ -524,6 +542,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             "orchestrate": ("delegating", "Coordinating employees"),
             "review": ("reviewing", "Reviewing changes"),
             "question": ("thinking", "Answering a question"),
+            "report": ("researching", "Investigating for a report"),
             "chat": ("thinking", "Writing a response"),
         }.get(run["runType"], ("thinking", "Starting the task"))
         set_activity(run, *initial_activity)
@@ -596,6 +615,8 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
                 raise RuntimeError("Tech lead returned invalid repository context.")
             if run["runType"] in ("review", "orchestrate") and not isinstance(candidate.get("ready"), bool):
                 raise RuntimeError("Tech lead returned an invalid change review.")
+            if run["runType"] == "report" and not isinstance(candidate.get("executive_summary"), str):
+                raise RuntimeError("The employee returned an invalid report.")
             plan_result = candidate
         with lock:
             run["returncode"] = returncode
@@ -673,6 +694,8 @@ class OfficeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             self.json_response({
                 "ok": True,
+                "version": 2,
+                "runTypes": list(SUPPORTED_RUN_TYPES),
                 "agents": {"codex": bool(find_cli("codex")), "claude": bool(find_cli("claude"))},
             })
             return
@@ -739,7 +762,7 @@ class OfficeHandler(BaseHTTPRequestHandler):
         session_id = str(data.get("sessionId", "")).strip() or None
         if not profile_id or agent not in ("codex", "claude") or not task or not prompt:
             raise ValueError("profileId, agent, task, and prompt are required.")
-        if run_type not in ("work", "chat", "question", "onboard", "plan", "review", "orchestrate"):
+        if run_type not in SUPPORTED_RUN_TYPES:
             raise ValueError("Unsupported runType.")
         if len(profile_id) > 160 or len(task) > 500 or len(prompt) > 100_000:
             raise ValueError("Run request is too large.")

@@ -476,14 +476,16 @@
   .sticky-note{
     margin-top:8px; font-size:11px; color:#3a2c05; line-height:1.35; font-weight:600;
     background:var(--sticky); border:2px solid #000;
-    padding:7px 8px; flex:1; white-space:pre-wrap; word-break:break-word;
-    display:flex; flex-wrap:wrap; align-items:center; align-content:center; justify-content:center;
+    padding:7px 18px; flex:1; word-break:break-word;
+    display:grid; place-items:center;
     text-align:center;
     position:relative;
   }
+  .sticky-note-text{ display:block; width:100%; white-space:pre-wrap; text-align:center; }
   .working-dot{
-    display:inline-block; width:6px; height:6px; background:var(--working-dark);
-    margin-left:4px; vertical-align:middle; animation: blink 1s steps(1) infinite; border:1px solid #000;
+    position:absolute; right:7px; top:50%; transform:translateY(-50%);
+    display:block; width:6px; height:6px; background:var(--working-dark);
+    animation: blink 1s steps(1) infinite; border:1px solid #000;
   }
   @keyframes blink{ 50%{ opacity:0.1; } }
   .queue-note{ font-size:10px; color:var(--ink-dim); margin-top:6px; font-weight:700; text-transform:uppercase; letter-spacing:.02em; }
@@ -496,7 +498,7 @@
   .worker-activity.phase-editing{ background:#FFF0B8; color:#62480B; }
   .worker-activity.phase-testing{ background:#DDF2FF; color:#174D68; }
   .worker-activity.phase-building{ background:#E8DFFF; color:#493373; }
-  .worker-activity.phase-inspecting,.worker-activity.phase-reviewing{ background:#E5F2DE; color:#315A2E; }
+  .worker-activity.phase-inspecting,.worker-activity.phase-reviewing,.worker-activity.phase-researching{ background:#E5F2DE; color:#315A2E; }
   .worker-activity.phase-delegating{ background:#E8E0F5; color:#4D3473; }
   .worker-activity.phase-command,.worker-activity.phase-tool{ background:#E9E7E1; color:#403D36; }
   .worker-activity.phase-thinking,.worker-activity.phase-wrapping,.worker-activity.phase-starting,.worker-activity.phase-queued{ background:#F4E9D4; color:#664A20; }
@@ -599,6 +601,17 @@
     font-size:10px; font-weight:700; line-height:1.4;
   }
   .publish-status{ min-height:16px; color:var(--ink-dim); font-size:10px; font-weight:700; }
+  .report-list{ display:flex; flex-direction:column; gap:8px; margin-top:16px; }
+  .report-item{ border:2px solid #000; background:#FFFDF8; padding:10px; }
+  .report-item-head{ display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+  .report-item-title{ font-size:11px; font-weight:800; overflow-wrap:anywhere; }
+  .report-item-meta{ margin-top:5px; color:var(--ink-dim); font-size:9px; }
+  .report-item button{ margin-top:8px; border:2px solid #000; background:var(--panel); padding:5px 8px; font:700 9px var(--font); text-transform:uppercase; }
+  .report-detail{ margin-top:14px; border:2px solid #000; background:#FFFDF8; padding:14px; font-size:11px; line-height:1.5; }
+  .report-detail h3{ margin:12px 0 5px; font-size:11px; text-transform:uppercase; }
+  .report-detail h3:first-child{ margin-top:0; }
+  .report-detail ul,.report-detail ol{ margin:4px 0; padding-left:20px; }
+  .report-detail code{ overflow-wrap:anywhere; }
 
   /* hotbar footer */
   .ticker-wrap{
@@ -734,7 +747,7 @@
   .nameplate{ padding:4px 8px; background:#7D5A3B; }
   .badge{ padding:4px 7px; border-color:var(--line); }
   .desk-surface{ margin-top:10px; }
-  .sticky-note{ padding:9px 10px; color:#493A13; }
+  .sticky-note{ padding:9px 20px; color:#493A13; }
   .desk-actions button{ background:#FFF9EF; border:1px solid var(--line); box-shadow:1px 1px 0 var(--line); }
 
   .modal-backdrop{ background:rgba(24,29,26,.7); backdrop-filter:blur(3px); padding:18px; }
@@ -1016,6 +1029,23 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="reportModalBackdrop">
+  <div class="modal" style="width:min(760px,94vw);">
+    <h2>Floor reports</h2>
+    <p class="hint" id="reportFloorHint">Ask an employee to investigate how something should be implemented.</p>
+    <label for="reportQuestion">What should the employee investigate?</label>
+    <textarea id="reportQuestion" placeholder="e.g. How should we add idempotency to the webhook processor?"></textarea>
+    <label for="reportContext">Additional context (optional)</label>
+    <textarea id="reportContext" placeholder="Constraints, goals, relevant tickets, or alternatives to compare"></textarea>
+    <div class="modal-actions">
+      <button onclick="closeReportModal()">× Close</button>
+      <button class="primary" onclick="submitReportRequest()">⌕ Request report</button>
+    </div>
+    <div class="report-list" id="reportList"></div>
+    <div class="report-detail" id="reportDetail" hidden></div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="floorModalBackdrop">
   <div class="modal">
     <h2 id="floorModalTitle">New floor</h2>
@@ -1187,8 +1217,11 @@ let reviewingFloorId = null;
 let officeChat = { agent:'codex', section:'office', sessionIds:{}, messages:[] };
 const pendingLeadPlans = new Map();
 const pendingLeadReviews = new Map();
+const pendingFloorReports = new Map();
 const reviewRepositoryStates = new Map();
 const dispatchingFloors = new Set();
+const dispatchingReports = new Set();
+let agentServiceRunTypes = null;
 
 function uid(p){ return p+'_'+Date.now()+'_'+Math.floor(Math.random()*1000); }
 function escapeHtml(s){
@@ -1840,7 +1873,8 @@ async function syncWorkerRuntime(){
           changed = true;
         }
       }
-      if(!w.sharedLeadSession && data.status==='completed' && w.tasks[0] && !w.tasks[0].contextCaptured){
+      if(!w.sharedLeadSession && data.status==='completed' && w.tasks[0]
+        && w.tasks[0].kind!=='report' && !w.tasks[0].contextCaptured){
         const floor = floors.find(f=>f.id===w.floorId);
         const task = w.tasks[0];
         const summary = String(data.finalMessage || 'Completed without a final written summary.').slice(0,6000);
@@ -1873,6 +1907,7 @@ async function checkAgentService(){
     const response = await fetch('/api/health', { cache:'no-store' });
     if(!response.ok) throw new Error();
     const data = await response.json();
+    agentServiceRunTypes = Array.isArray(data.runTypes) ? data.runTypes : [];
     const ready = Object.entries(data.agents).filter(([,ok])=>ok).map(([name])=>name);
     const missing = Object.entries(data.agents).filter(([,ok])=>!ok).map(([name])=>name);
     el.className = 'service-status online';
@@ -2061,8 +2096,13 @@ async function assignTask(floorId, title, note, options){
     shouldStart = true;
     log(`${source} assigned "${title}" to ${target.name}`);
   } else {
-    fw.sort((a,b)=> a.tasks.length - b.tasks.length);
-    target = fw[0];
+    // A report owns its employee's independent CLI session. Queue implementation
+    // work on another desk so changing that desk to shared-lead mode cannot hide
+    // or disrupt the in-flight report.
+    const queueable = fw.filter(worker=>!worker.tasks.some(item=>item.kind==='report'));
+    const candidates = queueable.length ? queueable : fw;
+    candidates.sort((a,b)=> a.tasks.length - b.tasks.length);
+    target = candidates[0];
     target.tasks.push(task);
     target.updatedAt = Date.now();
     target.assignmentFlashUntil = Date.now()+2200;
@@ -2089,10 +2129,12 @@ function render(){
   reconcileAllReadyReviews();
   renderManagerCard();
   renderChatPanels();
+  renderReportCenter();
 
   const fw = floorWorkers(currentFloorId);
   const currentFloor = floors.find(item=>item.id===currentFloorId) || {};
   const inboxCount = (currentFloor.inbox || []).length;
+  const activeReportCount = (currentFloor.reports || []).filter(report=>['queued','working'].includes(report.status)).length;
   const counts = { idle:0, working:0, blocked:0 };
   fw.forEach(w=> counts[w.status]++ );
   document.getElementById('counts').innerHTML = `
@@ -2100,6 +2142,7 @@ function render(){
     <div class="count-chip"><span class="dot blocked"></span>blocked <b>${counts.blocked}</b></div>
     <div class="count-chip"><span class="dot idle"></span>idle <b>${counts.idle}</b></div>
     <div class="count-chip">inbox <b>${inboxCount}</b></div>
+    <div class="count-chip">reports <b>${activeReportCount}</b></div>
     <div class="count-chip">team <b>${fw.length}</b></div>
   `;
 
@@ -2140,9 +2183,7 @@ function render(){
           <div class="arm right"></div>
         </div>
       </div>
-      <div class="sticky-note ${current ? '' : 'empty'}">
-        ${current ? escapeHtml(current.title) : 'awaiting next assignment'}${w.status==='working' ? '<span class="working-dot"></span>' : ''}
-      </div>
+      <div class="sticky-note ${current ? '' : 'empty'}"><span class="sticky-note-text">${current ? escapeHtml(current.title) : 'awaiting next assignment'}</span>${w.status==='working' ? '<span class="working-dot"></span>' : ''}</div>
       <div class="worker-activity phase-${activityPhase}" title="Live activity from the ${escapeHtml((floors.find(f=>f.id===w.floorId) || {}).agent || 'agent')} session">
         <span class="activity-icon">${activityIcons[activityPhase] || '•'}</span>
         <span>${escapeHtml(activityLabel)}</span>
@@ -2163,7 +2204,8 @@ function render(){
 function renderFloorTabs(){
   const el = document.getElementById('floorTabs');
   el.innerHTML = floors.map(f=>{
-    const n = floorWorkers(f.id).reduce((sum,w)=> sum + w.tasks.length, 0) + (f.inbox || []).length;
+    const n = floorWorkers(f.id).reduce((sum,w)=> sum + w.tasks.length, 0) + (f.inbox || []).length
+      + (f.reports || []).filter(report=>['queued','working'].includes(report.status)).length;
     return `<div class="floor-tab ${f.id===currentFloorId?'active':''}" onclick="switchFloor('${f.id}')">
       ${escapeHtml(f.name)} ${f.agent ? `<span class="agent-mini">${escapeHtml(f.agent)}</span>` : ''} <span class="n">${n}</span>
     </div>`;
@@ -2212,10 +2254,13 @@ function renderManagerCard(){
   const floorName = floor.name || '';
   const agent = ['claude','codex'].includes(floor.agent) ? floor.agent : '';
   const roleName = floor.techLeadName || 'Unassigned';
+  const reports = floor.reports || [];
   const taskCount = fw.reduce((sum,w)=>sum+w.tasks.length,0) + (floor.inbox || []).length;
+  const reportCount = reports.length;
   const onboarding = ['starting','running'].includes(floor.onboardingStatus);
   const planning = pendingLeadPlans.has(`lead:${floor.id}`);
   const reviewing = pendingLeadReviews.has(`lead:${floor.id}`);
+  const reporting = reports.some(report=>report.status==='working');
   const answering = (floor.questions || []).some(message=>['starting','working'].includes(message.status));
   const queuedCount = (floor.inbox || []).length;
   const failedIntake = (floor.inbox || []).find(request=>request.failed);
@@ -2231,10 +2276,11 @@ function renderManagerCard(){
     : floor.reviewStatus==='ready' ? 'review approved'
     : floor.reviewStatus==='issues' ? 'changes requested'
     : reviewing ? 'reviewing changes'
+    : reporting ? 'researching report'
     : answering ? 'answering question'
     : planning ? 'analyzing'
     : queuedCount ? `${queuedCount} queued` : 'ready';
-  const reviewClass = onboarding || reviewing || answering || planning ? 'working' : (floor.onboardingStatus==='failed' || floor.reviewStatus==='issues' ? 'blocked' : 'idle');
+  const reviewClass = onboarding || reviewing || reporting || answering || planning ? 'working' : (floor.onboardingStatus==='failed' || floor.reviewStatus==='issues' ? 'blocked' : 'idle');
   const statusControl = !floor.techLeadName
     ? `<div class="badge blocked">name required</div>`
     : failedIntake
@@ -2275,10 +2321,98 @@ function renderManagerCard(){
     </div>
     <div class="manager-actions">
       ${statusControl}
+      <button class="secondary" onclick="openReportModal()">⌕ Reports${reportCount ? ` (${reportCount})` : ''}</button>
       <button class="secondary" onclick="openFloorModal('${floor.id}')">⚙ Configure</button>
       <button onclick="openAssignModal()" ${onboarding ? 'disabled title="The agent is learning the codebase"' : ''}>＋ Assign work</button>
     </div>
   `;
+}
+
+let viewingReportId = null;
+function openReportModal(){
+  viewingReportId = null;
+  document.getElementById('reportQuestion').value = '';
+  document.getElementById('reportContext').value = '';
+  document.getElementById('reportDetail').hidden = true;
+  renderReportCenter();
+  document.getElementById('reportModalBackdrop').classList.add('open');
+  setTimeout(()=>document.getElementById('reportQuestion').focus(),50);
+}
+
+function closeReportModal(){
+  viewingReportId = null;
+  document.getElementById('reportModalBackdrop').classList.remove('open');
+}
+
+async function submitReportRequest(){
+  const floor = floors.find(item=>item.id===currentFloorId);
+  const question = document.getElementById('reportQuestion').value.trim();
+  const context = document.getElementById('reportContext').value.trim();
+  if(!floor || !question) return;
+  if(floor.onboardingStatus!=='ready'){
+    window.alert(`${floor.techLeadName} must finish learning this codebase before assigning a report.`);
+    return;
+  }
+  if(Array.isArray(agentServiceRunTypes) && !agentServiceRunTypes.includes('report')){
+    window.alert('The local office server is out of date. Restart office_server.py, refresh this page, and request the report again.');
+    return;
+  }
+  document.getElementById('reportQuestion').value = '';
+  document.getElementById('reportContext').value = '';
+  await enqueueFloorReport(floor, question, context);
+  renderReportCenter();
+}
+
+function viewFloorReport(reportId){
+  viewingReportId = reportId;
+  renderReportCenter();
+}
+
+function renderReportCenter(){
+  const list = document.getElementById('reportList');
+  const detail = document.getElementById('reportDetail');
+  const hint = document.getElementById('reportFloorHint');
+  if(!list || !detail || !hint) return;
+  const floor = floors.find(item=>item.id===currentFloorId);
+  if(!floor){ list.innerHTML=''; detail.hidden=true; return; }
+  floor.reports = Array.isArray(floor.reports) ? floor.reports : [];
+  hint.textContent = `Ask one employee on ${floor.name} to investigate the onboarded repository without changing code.`;
+  const reports = [...floor.reports].sort((a,b)=>(b.requestedAt || 0)-(a.requestedAt || 0));
+  list.innerHTML = reports.length ? reports.map(report=>{
+    const title = report.result && report.result.title ? report.result.title : report.question;
+    const statusLabel = report.status==='working' ? `working · ${report.workerName || 'employee'}`
+      : report.status==='queued' ? 'queued'
+      : report.status==='completed' ? 'completed'
+      : 'failed';
+    return `<div class="report-item">
+      <div class="report-item-head">
+        <div class="report-item-title">${escapeHtml(title)}</div>
+        <div class="badge ${report.status==='failed' ? 'blocked' : report.status==='completed' ? 'idle' : 'working'}">${escapeHtml(statusLabel)}</div>
+      </div>
+      <div class="report-item-meta">${new Date(report.requestedAt).toLocaleString()}${report.workerName ? ` · ${escapeHtml(report.workerName)}` : ''}</div>
+      ${report.status==='completed' ? `<button onclick="viewFloorReport('${report.id}')">▤ Read report</button>` : ''}
+      ${report.status==='failed' ? `<div class="report-item-meta">${escapeHtml(report.error || 'Report failed')}</div><button onclick="retryFloorReport('${report.id}')">↻ Retry</button>` : ''}
+    </div>`;
+  }).join('') : '<div class="chat-empty">No reports requested for this floor yet.</div>';
+  const report = viewingReportId && floor.reports.find(item=>item.id===viewingReportId);
+  if(!report || report.status!=='completed' || !report.result){ detail.hidden=true; detail.innerHTML=''; return; }
+  const result = report.result;
+  const listHtml = (items, ordered)=>{
+    const values = Array.isArray(items) ? items.filter(Boolean) : [];
+    if(!values.length) return '<div class="chat-empty">None listed.</div>';
+    const tag = ordered ? 'ol' : 'ul';
+    return `<${tag}>${values.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</${tag}>`;
+  };
+  detail.hidden = false;
+  detail.innerHTML = `
+    <h3>${escapeHtml(result.title || report.question)}</h3>
+    <div>${escapeHtml(result.executive_summary || '')}</div>
+    <h3>Recommendation</h3><div>${escapeHtml(result.recommendation || '')}</div>
+    <h3>Implementation steps</h3>${listHtml(result.implementation_steps, true)}
+    <h3>Risks</h3>${listHtml(result.risks, false)}
+    <h3>Relevant files</h3>${listHtml(result.relevant_files, false)}
+  `;
+  detail.scrollIntoView({ block:'nearest', behavior:'smooth' });
 }
 
 /* floor modal */
@@ -2600,6 +2734,7 @@ function techLeadPrompt(floor, initiative, note){
 function floorLeadBusy(floor){
   const profileId = `lead:${floor.id}`;
   return pendingLeadPlans.has(profileId) || pendingLeadReviews.has(profileId)
+    || dispatchingFloors.has(floor.id) || dispatchingReports.has(floor.id)
     || (floor.questions || []).some(message=>['starting','working'].includes(message.status));
 }
 
@@ -2697,6 +2832,204 @@ async function retryFloorInbox(floorId){
   await saveAll();
   render();
   dispatchFloorInbox(floorId);
+}
+
+function floorReportPrompt(floor, report){
+  return [
+    `You are the research employee assigned by ${floor.techLeadName}, the manager and tech lead for this repository.`,
+    `The user wants a read-only implementation report for this question:\n${report.question}`,
+    report.context ? `Additional context:\n${report.context}` : '',
+    techLeadSharedContext(floor),
+    'Inspect the repository deeply enough to give an evidence-based implementation recommendation. Do not modify files, install dependencies, create commits, switch branches, push, or perform the implementation.',
+    'Return only the required structured report with a clear executive summary, recommendation, ordered implementation steps, risks, and relevant repository files.'
+  ].filter(Boolean).join('\n\n');
+}
+
+function floorReportProfileId(floor, report){
+  // Older in-flight reports ran on the lead profile; keep them recoverable.
+  return report.profileId || `lead:${floor.id}`;
+}
+
+function releaseReportEmployee(report){
+  const worker = workers.find(item=>item.id===report.workerId);
+  if(!worker) return;
+  worker.tasks = worker.tasks.filter(task=>task.reportId!==report.id);
+  worker.status = worker.tasks.length ? 'working' : 'idle';
+  worker.runtimeStatus = worker.tasks.length ? 'delegated' : 'idle';
+  worker.activityPhase = worker.tasks.length ? 'queued' : 'idle';
+  worker.activityLabel = worker.tasks.length ? 'Waiting for delegation' : 'Available';
+  worker.updatedAt = Date.now();
+}
+
+async function finishFloorReport(floor, report, result){
+  report.status = 'completed';
+  report.result = result;
+  report.completedAt = Date.now();
+  report.error = '';
+  releaseReportEmployee(report);
+  floor.leadContext = [...(floor.leadContext || []), {
+    id:uid('context'), time:Date.now(), workerId:report.workerId,
+    workerName:report.workerName || 'Research employee', taskId:report.id,
+    taskTitle:`Report: ${report.question}`, initiative:'report',
+    summary:String(result.executive_summary || result.recommendation || 'Report completed.').slice(0,6000)
+  }].slice(-100);
+  await saveAll();
+  log(`${report.workerName || 'An employee'} completed the report "${result.title || report.question}"`);
+  render();
+}
+
+async function failFloorReport(floor, report, error){
+  report.status = 'failed';
+  report.error = error || 'The employee could not complete this report.';
+  report.completedAt = Date.now();
+  releaseReportEmployee(report);
+  await saveAll();
+  log(`Report failed for "${report.question}" — ${report.error}`);
+  render();
+}
+
+async function enqueueFloorReport(floor, question, context){
+  floor.reports = Array.isArray(floor.reports) ? floor.reports : [];
+  const report = {
+    id:uid('report'), question, context:context || '', status:'queued',
+    requestedAt:Date.now(), result:null, error:''
+  };
+  floor.reports.push(report);
+  await saveAll();
+  log(`Report requested on ${floor.name}: "${question}"`);
+  render();
+  dispatchFloorReport(floor.id);
+  return report;
+}
+
+async function recoverFloorReport(floor, report){
+  if(dispatchingReports.has(floor.id)) return;
+  dispatchingReports.add(floor.id);
+  try{
+    const profileId = floorReportProfileId(floor, report);
+    const response = await fetch(`/api/logs?profileId=${encodeURIComponent(profileId)}&since=999999999`, { cache:'no-store' });
+    if(!response.ok) return;
+    const data = await response.json();
+    if(data.runType==='report' && (!report.startedAt || data.startedAt===report.startedAt)){
+      if(['starting','running'].includes(data.status)){
+        report.startedAt = data.startedAt;
+        pendingFloorReports.set(profileId, { floorId:floor.id, reportId:report.id, startedAt:data.startedAt });
+      }else if(data.status==='completed' && data.result){
+        await finishFloorReport(floor, report, data.result);
+      }else if(data.status==='failed' || data.status==='completed'){
+        await failFloorReport(floor, report, data.errorMessage || 'The employee did not return a valid report.');
+      }
+    }else if(!['starting','running'].includes(data.status)){
+      releaseReportEmployee(report);
+      report.status = 'queued';
+      report.startedAt = null;
+      report.workerId = null;
+      report.workerName = '';
+      await saveAll();
+      render();
+    }
+  }catch(e){ /* retry recovery on the next report cycle */ }
+  finally{ dispatchingReports.delete(floor.id); }
+}
+
+async function dispatchFloorReport(floorId){
+  const floor = floors.find(item=>item.id===floorId);
+  if(!floor || floor.onboardingStatus!=='ready') return;
+  floor.reports = Array.isArray(floor.reports) ? floor.reports : [];
+  const working = floor.reports.find(report=>report.status==='working');
+  if(working && !pendingFloorReports.has(floorReportProfileId(floor, working))) return recoverFloorReport(floor, working);
+  if(working || floorLeadBusy(floor) || (floor.inbox || []).length || dispatchingReports.has(floor.id)) return;
+  const report = floor.reports.find(item=>item.status==='queued');
+  const worker = floorWorkers(floor.id).find(item=>item.status==='idle' && item.tasks.length===0);
+  if(!report || !worker) return;
+  dispatchingReports.add(floor.id);
+  try{
+    const profileId = `worker:${worker.id}`;
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId, runType:'report', agent:floor.agent,
+        task:`Report: ${report.question.slice(0,110)}`,
+        prompt:floorReportPrompt(floor, report), repository:floorRepository(floor),
+        sessionId:worker.sessionId || undefined
+      })
+    });
+    const data = await response.json();
+    if(!response.ok){
+      if(response.status!==409){
+        const message = data.error==='Unsupported runType.'
+          ? 'The local office server is out of date. Restart office_server.py and retry this report.'
+          : data.error || `Report returned ${response.status}`;
+        await failFloorReport(floor, report, message);
+      }
+      return;
+    }
+    const task = { id:uid('t'), title:`Report: ${report.question}`, note:report.context || '', kind:'report', reportId:report.id };
+    worker.tasks.push(task);
+    worker.status = 'working';
+    worker.runtimeStatus = data.status;
+    worker.sharedLeadSession = false;
+    worker.activityPhase = data.activityPhase || 'researching';
+    worker.activityLabel = data.activityLabel || 'Investigating for a report';
+    worker.assignmentFlashUntil = Date.now()+2200;
+    worker.updatedAt = Date.now();
+    report.status = 'working';
+    report.startedAt = data.startedAt;
+    report.workerId = worker.id;
+    report.workerName = worker.name;
+    report.profileId = profileId;
+    pendingFloorReports.set(profileId, { floorId:floor.id, reportId:report.id, startedAt:data.startedAt });
+    await saveAll();
+    log(`${floor.techLeadName} assigned the report to ${worker.name}`);
+    render();
+  }catch(e){
+    await failFloorReport(floor, report, String(e.message || e));
+  }finally{
+    dispatchingReports.delete(floor.id);
+  }
+}
+
+function dispatchAllFloorReports(){
+  for(const floor of floors) dispatchFloorReport(floor.id);
+}
+
+async function syncFloorReports(){
+  for(const [profileId, pending] of [...pendingFloorReports.entries()]){
+    try{
+      const response = await fetch(`/api/logs?profileId=${encodeURIComponent(profileId)}&since=999999999`, { cache:'no-store' });
+      if(!response.ok) continue;
+      const data = await response.json();
+      if(data.startedAt!==pending.startedAt) continue;
+      const floor = floors.find(item=>item.id===pending.floorId);
+      const report = floor && (floor.reports || []).find(item=>item.id===pending.reportId);
+      if(!floor || !report){ pendingFloorReports.delete(profileId); continue; }
+      const worker = workers.find(item=>item.id===report.workerId);
+      if(worker && data.sessionId && worker.sessionId!==data.sessionId) worker.sessionId = data.sessionId;
+      if(data.status==='completed' && data.result){
+        pendingFloorReports.delete(profileId);
+        await finishFloorReport(floor, report, data.result);
+      }else if(data.status==='failed'){
+        pendingFloorReports.delete(profileId);
+        await failFloorReport(floor, report, data.errorMessage || 'The employee could not complete this report.');
+      }
+    }catch(e){ /* retry on the next report sync */ }
+  }
+}
+
+async function retryFloorReport(reportId){
+  const floor = floors.find(item=>(item.reports || []).some(report=>report.id===reportId));
+  const report = floor && floor.reports.find(item=>item.id===reportId);
+  if(!floor || !report) return;
+  report.status = 'queued';
+  report.error = '';
+  report.result = null;
+  report.startedAt = null;
+  report.workerId = null;
+  report.workerName = '';
+  report.profileId = '';
+  await saveAll();
+  render();
+  dispatchFloorReport(floor.id);
 }
 
 async function requestTechLeadPlan(floor, initiative, note, options){
@@ -3310,9 +3643,11 @@ setInterval(syncWorkerRuntime, 3000);
 setInterval(syncFloorOnboarding, 2000);
 setInterval(syncLeadPlans, 2000);
 setInterval(syncLeadReviews, 2000);
+setInterval(syncFloorReports, 2000);
 setInterval(syncChatRuns, 1500);
 setInterval(maybeStartLeadReviews, 3000);
 setInterval(dispatchAllFloorInboxes, 2000);
+setInterval(dispatchAllFloorReports, 2000);
 setInterval(checkAgentService, 15000); checkAgentService();
 
 renderTicker();

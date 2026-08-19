@@ -131,6 +131,75 @@ def append_log(run: dict, stream: str, text: str) -> None:
         })
 
 
+def set_activity(run: dict, phase: str, label: str) -> None:
+    with lock:
+        run["activityPhase"] = phase
+        run["activityLabel"] = label
+        run["activityUpdatedAt"] = now_ms()
+
+
+def command_activity(command: object) -> tuple[str, str]:
+    text = " ".join(str(part) for part in command) if isinstance(command, list) else str(command or "")
+    lowered = text.lower()
+    test_patterns = (
+        "pytest", "npm test", "npm run test", "pnpm test", "yarn test", "bun test",
+        "go test", "cargo test", "mvn test", "gradle test", "gradlew test", "rspec",
+        "jest", "vitest", "phpunit", "dotnet test",
+    )
+    if any(pattern in lowered for pattern in test_patterns):
+        return "testing", "Running tests"
+    build_patterns = (
+        "npm run build", "pnpm build", "yarn build", "bun run build", "cargo build",
+        "go build", "mvn package", "gradle build", "gradlew build", "dotnet build", "tsc",
+    )
+    if any(pattern in lowered for pattern in build_patterns):
+        return "building", "Building project"
+    if re.search(r"(^|\s)git\s+(diff|status|show|log)\b", lowered):
+        return "reviewing", "Reviewing changes"
+    return "command", "Running a command"
+
+
+def update_activity_from_event(run: dict, event: dict) -> None:
+    if run["agent"] == "codex":
+        event_type = str(event.get("type", ""))
+        item = event.get("item") or {}
+        item_type = str(item.get("type", ""))
+        if item_type == "command_execution":
+            set_activity(run, *command_activity(item.get("command")))
+        elif item_type in ("file_change", "file_changes"):
+            set_activity(run, "editing", "Editing code")
+        elif item_type == "reasoning":
+            set_activity(run, "thinking", "Thinking through the task")
+        elif item_type == "web_search":
+            set_activity(run, "researching", "Researching")
+        elif item_type == "mcp_tool_call":
+            set_activity(run, "tool", "Using a development tool")
+        elif event_type == "turn.started":
+            set_activity(run, "thinking", "Starting the task")
+        elif event_type == "turn.completed":
+            set_activity(run, "wrapping", "Wrapping up")
+        return
+
+    if event.get("type") != "assistant":
+        return
+    message = event.get("message") or {}
+    for block in message.get("content") or []:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        name = str(block.get("name", "")).lower()
+        tool_input = block.get("input") or {}
+        if name in ("edit", "write", "multiedit", "notebookedit"):
+            set_activity(run, "editing", "Editing code")
+        elif name in ("bash", "shell", "exec", "execute"):
+            set_activity(run, *command_activity(tool_input.get("command")))
+        elif name in ("read", "glob", "grep", "ls", "search"):
+            set_activity(run, "inspecting", "Reading the codebase")
+        elif name in ("task", "agent", "dispatch_agent", "send_message"):
+            set_activity(run, "delegating", "Coordinating employees")
+        else:
+            set_activity(run, "tool", "Using a development tool")
+
+
 def repo_path(spec: dict, run: dict) -> Path:
     mode = spec.get("mode")
     if mode == "office":
@@ -449,6 +518,15 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
         )
         resume_note = f" · resuming {run['sessionId']}" if run.get("sessionId") else " · new session"
         append_log(run, "system", f"Starting {run['agent']} in {repository}{resume_note}")
+        initial_activity = {
+            "onboard": ("inspecting", "Learning the codebase"),
+            "plan": ("thinking", "Analyzing the task"),
+            "orchestrate": ("delegating", "Coordinating employees"),
+            "review": ("reviewing", "Reviewing changes"),
+            "question": ("thinking", "Answering a question"),
+            "chat": ("thinking", "Writing a response"),
+        }.get(run["runType"], ("thinking", "Starting the task"))
+        set_activity(run, *initial_activity)
         process_env = agent_environment()
         retried_claude_login = False
         while True:
@@ -475,6 +553,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
                     claude_auth_failed = True
                 try:
                     event = json.loads(line)
+                    update_activity_from_event(run, event)
                     discovered_session = (
                         event.get("thread_id") or event.get("session_id")
                         or event.get("conversation_id")
@@ -526,6 +605,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             run["errorMessage"] = None if returncode == 0 else (final_message or f"{run['agent']} exited with code {returncode}")
             run["endedAt"] = now_ms()
             run["process"] = None
+        set_activity(run, "completed" if returncode == 0 else "failed", "Completed" if returncode == 0 else "Agent stopped with an error")
         append_log(run, "system", f"{run['agent']} exited with code {returncode}")
     except Exception as exc:  # surfaced in the profile log
         append_log(run, "error", str(exc))
@@ -534,6 +614,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             run["errorMessage"] = str(exc)
             run["endedAt"] = now_ms()
             run["process"] = None
+        set_activity(run, "failed", "Agent stopped with an error")
     finally:
         for temporary_path in temporary_paths:
             try:
@@ -558,6 +639,9 @@ def public_run(run: dict, since: int = 0) -> dict:
             "sessionId": run.get("sessionId"),
             "finalMessage": run.get("finalMessage"),
             "errorMessage": run.get("errorMessage"),
+            "activityPhase": run.get("activityPhase", "idle"),
+            "activityLabel": run.get("activityLabel", "Available"),
+            "activityUpdatedAt": run.get("activityUpdatedAt"),
             "logs": [item for item in run["logs"] if item["sequence"] > since],
             "sequence": run["sequence"],
         }
@@ -681,6 +765,9 @@ class OfficeHandler(BaseHTTPRequestHandler):
                 "sessionId": session_id,
                 "finalMessage": None,
                 "errorMessage": None,
+                "activityPhase": "queued",
+                "activityLabel": "Queued",
+                "activityUpdatedAt": now_ms(),
                 "logs": deque(maxlen=MAX_LOG_LINES),
                 "sequence": 0,
             }
@@ -700,6 +787,7 @@ class OfficeHandler(BaseHTTPRequestHandler):
             self.json_response({"error": "Unknown profile."}, HTTPStatus.NOT_FOUND)
             return
         if process and process.poll() is None:
+            set_activity(run, "stopping", "Stopping agent")
             process.terminate()
             append_log(run, "system", "Stop requested by user")
         self.json_response(public_run(run))

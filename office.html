@@ -366,6 +366,40 @@
   .desk.status-blocked{ background:#FBE7D2; }
   .desk.status-idle{ background:var(--panel); }
   .desk.status-review{ background:#DDEEF7; }
+  .desk.just-assigned{ animation:assignedDeskBounce .85s steps(5) 1; z-index:3; }
+  .desk.just-assigned::after{
+    content:"NEW TASK"; position:absolute; top:38px; right:8px; z-index:5;
+    padding:4px 6px; border:2px solid #000; background:var(--sticky); color:#3A2C05;
+    box-shadow:2px 2px 0 rgba(0,0,0,.7); font-size:8px; font-weight:800; letter-spacing:.06em;
+    animation:assignedToast 1.8s steps(6) forwards;
+  }
+  .desk.just-assigned .sticky-note{ animation:assignedNoteDrop .7s steps(5) 1; }
+  .desk.just-assigned .monitor::after{ animation:assignedScreenFlash 1.2s steps(3) 1; }
+  .desk.just-assigned .person .arm.right{ animation:assignedWave .24s steps(2) 5 alternate; }
+  @keyframes assignedDeskBounce{
+    0%{ transform:translateY(0); }
+    35%{ transform:translateY(-8px) rotate(-.5deg); }
+    65%{ transform:translateY(2px) rotate(.5deg); }
+    100%{ transform:translateY(0); }
+  }
+  @keyframes assignedNoteDrop{
+    0%{ transform:translateY(-14px) rotate(-2deg); opacity:0; }
+    70%{ transform:translateY(2px) rotate(1deg); opacity:1; }
+    100%{ transform:none; opacity:1; }
+  }
+  @keyframes assignedScreenFlash{
+    0%,100%{ background:#4D5457; }
+    35%,70%{ background:#A8E6A2; }
+  }
+  @keyframes assignedWave{
+    from{ transform:rotate(0deg); }
+    to{ transform:rotate(-38deg); }
+  }
+  @keyframes assignedToast{
+    0%{ transform:translateY(6px) scale(.8); opacity:0; }
+    15%,70%{ transform:translateY(0) scale(1); opacity:1; }
+    100%{ transform:translateY(-8px) scale(1); opacity:0; }
+  }
 
   .desk-top{ display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
   .nameplate{
@@ -445,12 +479,40 @@
     padding:7px 8px; flex:1; white-space:pre-wrap; word-break:break-word;
     position:relative;
   }
+  .sticky-note.empty{
+    display:flex; align-items:center; justify-content:center;
+    text-align:center; white-space:normal;
+  }
   .working-dot{
     display:inline-block; width:6px; height:6px; background:var(--working-dark);
     margin-left:4px; animation: blink 1s steps(1) infinite; border:1px solid #000;
   }
   @keyframes blink{ 50%{ opacity:0.1; } }
   .queue-note{ font-size:10px; color:var(--ink-dim); margin-top:6px; font-weight:700; text-transform:uppercase; letter-spacing:.02em; }
+  .worker-activity{
+    display:flex; align-items:center; gap:6px; margin-top:8px; padding:6px 8px;
+    border:1px solid var(--line); background:#F4EFE5; color:var(--ink-dim);
+    font-size:9px; font-weight:800; letter-spacing:.03em; text-transform:uppercase;
+  }
+  .worker-activity .activity-icon{ width:13px; text-align:center; font-size:11px; }
+  .worker-activity.phase-editing{ background:#FFF0B8; color:#62480B; }
+  .worker-activity.phase-testing{ background:#DDF2FF; color:#174D68; }
+  .worker-activity.phase-building{ background:#E8DFFF; color:#493373; }
+  .worker-activity.phase-inspecting,.worker-activity.phase-reviewing{ background:#E5F2DE; color:#315A2E; }
+  .worker-activity.phase-delegating{ background:#E8E0F5; color:#4D3473; }
+  .worker-activity.phase-command,.worker-activity.phase-tool{ background:#E9E7E1; color:#403D36; }
+  .worker-activity.phase-thinking,.worker-activity.phase-wrapping,.worker-activity.phase-starting,.worker-activity.phase-queued{ background:#F4E9D4; color:#664A20; }
+  .worker-activity.phase-failed{ background:#FFE1D7; color:#7B2D20; }
+  .worker-activity:not(.phase-idle) .activity-icon{ animation:activityPulse 1s steps(2) infinite; }
+  .worker-activity.phase-completed .activity-icon,.worker-activity.phase-failed .activity-icon{ animation:none; }
+  @keyframes activityPulse{ 50%{ opacity:.3; } }
+  @media (prefers-reduced-motion:reduce){
+    .desk.just-assigned,.desk.just-assigned::after,.desk.just-assigned .sticky-note,
+    .desk.just-assigned .monitor::after,.desk.just-assigned .person .arm.right{
+      animation:none !important;
+    }
+    .desk.just-assigned::after{ display:none; }
+  }
 
   .desk-actions{ display:flex; gap:6px; margin-top:8px; }
   .desk-actions button{
@@ -605,6 +667,8 @@
   .title-block .eyebrow{ color:#B9CCC5; }
   .title-block h1{ color:#FFF9EF; font-size:24px; text-shadow:2px 2px 0 #111; }
   .open-sign{ color:#102416; border-color:#0E1712; background:#82C78B; text-shadow:none; box-shadow:none; }
+  .open-sign.overtime{ color:#321A08; background:#F0A65A; }
+  .open-sign.overtime .dot{ background:#FFF0D8; }
   .clock-block,.clock-block .time{ color:#F8F4EA; }
   .service-status.online{ color:#9EE4A7; }
   .service-status.offline{ color:#FF9A7B; }
@@ -823,7 +887,7 @@
   <header>
     <div class="title-block">
       <div class="eyebrow">local agent workspace</div>
-      <h1>smallcase <span class="open-sign"><span class="dot"></span>open</span></h1>
+      <h1>smallcase <span class="open-sign" id="shiftStatus"><span class="dot"></span><span id="shiftStatusLabel">open</span></span></h1>
     </div>
     <div class="clock-block">
       <div>shift status</div>
@@ -1758,6 +1822,12 @@ async function syncWorkerRuntime(){
         w.sessionId = data.sessionId;
         changed = true;
       }
+      if(data.activityPhase && (w.activityPhase!==data.activityPhase || w.activityLabel!==data.activityLabel)){
+        w.activityPhase = data.activityPhase;
+        w.activityLabel = data.activityLabel || 'Working';
+        w.activityUpdatedAt = data.activityUpdatedAt || Date.now();
+        changed = true;
+      }
       if(data.status!=='idle' && w.runtimeStatus!==data.status){
         w.runtimeStatus = data.status;
         if(data.status==='failed') w.status = 'blocked';
@@ -1787,6 +1857,8 @@ async function syncWorkerRuntime(){
         const finished = w.tasks.shift();
         w.status = w.tasks.length ? 'working' : 'idle';
         w.runtimeStatus = w.tasks.length ? 'starting' : 'idle';
+        w.activityPhase = w.tasks.length ? 'starting' : 'idle';
+        w.activityLabel = w.tasks.length ? 'Starting queued work' : 'Available';
         w.updatedAt = Date.now();
         log(`${w.name} completed "${finished.title}" and is now ${w.tasks.length ? 'moving to queued work' : 'available'}`);
         if(w.tasks.length) await startWorkerAgent(w, w.tasks[0]);
@@ -1831,6 +1903,8 @@ function makeWorker(floorId, idx, tasks, status){
     name: pickName(floorId),
     skin: SKIN_TONES[idx % SKIN_TONES.length],
     status: status || (tasks.length ? 'working' : 'idle'),
+    activityPhase: tasks.length ? 'queued' : 'idle',
+    activityLabel: tasks.length ? 'Waiting to start' : 'Available',
     tasks: tasks,
     createdAt: Date.now(), updatedAt: Date.now()
   };
@@ -1866,6 +1940,8 @@ function releaseTrackerWorkers(floor, tracker){
     if(taskIndex!==-1) worker.tasks.splice(taskIndex, 1);
     worker.status = worker.tasks.length ? 'working' : 'idle';
     worker.runtimeStatus = worker.tasks.length ? 'delegated' : 'idle';
+    worker.activityPhase = worker.tasks.length ? 'queued' : 'idle';
+    worker.activityLabel = worker.tasks.length ? 'Waiting for delegation' : 'Available';
     worker.updatedAt = Date.now();
   }
   tracker.releasedAt = Date.now();
@@ -1946,6 +2022,8 @@ async function startWorkerAgent(worker, task){
     }
     worker.status = 'working';
     worker.runtimeStatus = data.status;
+    worker.activityPhase = data.activityPhase || 'starting';
+    worker.activityLabel = data.activityLabel || 'Starting the task';
     const tracker = task.initiativeId && (floor.multiInitiatives || []).find(item=>item.id===task.initiativeId);
     if(tracker){
       tracker.completedTaskIds = tracker.completedTaskIds.filter(id=>id!==task.id);
@@ -1959,6 +2037,8 @@ async function startWorkerAgent(worker, task){
   }catch(e){
     worker.status = 'blocked';
     worker.runtimeStatus = 'failed';
+    worker.activityPhase = 'failed';
+    worker.activityLabel = 'Agent stopped with an error';
     log(`${worker.name} could not start: ${e.message || e}`);
     return false;
   }
@@ -1979,6 +2059,7 @@ async function assignTask(floorId, title, note, options){
     target.tasks.push(task);
     target.status = 'working';
     target.updatedAt = Date.now();
+    target.assignmentFlashUntil = Date.now()+2200;
     shouldStart = true;
     log(`${source} assigned "${title}" to ${target.name}`);
   } else {
@@ -1986,11 +2067,14 @@ async function assignTask(floorId, title, note, options){
     target = fw[0];
     target.tasks.push(task);
     target.updatedAt = Date.now();
+    target.assignmentFlashUntil = Date.now()+2200;
     log(`${source} queued "${title}" behind ${target.name} (${target.tasks.length} in queue)`);
   }
   if(options.sharedLeadSession){
     target.sharedLeadSession = true;
     target.runtimeStatus = 'delegated';
+    target.activityPhase = 'queued';
+    target.activityLabel = 'Waiting for delegation';
     target.status = 'working';
     shouldStart = false;
   }
@@ -2026,8 +2110,17 @@ function render(){
     const current = w.tasks[0];
     const queueBehind = w.tasks.length - 1;
     const displayStatus = w.runtimeStatus==='completed' ? 'review' : (w.runtimeStatus==='failed' ? 'blocked' : w.status);
+    const justAssigned = Date.now() < Number(w.assignmentFlashUntil || 0);
+    const allowedPhases = ['idle','queued','starting','thinking','inspecting','editing','testing','building','reviewing','delegating','command','tool','researching','wrapping','completed','failed','stopping'];
+    const activityPhase = current && allowedPhases.includes(w.activityPhase) ? w.activityPhase : 'idle';
+    const activityLabel = current ? (w.activityLabel || 'Working') : 'Available';
+    const activityIcons = {
+      idle:'○', queued:'◷', starting:'▶', thinking:'…', inspecting:'◇', editing:'✎',
+      testing:'✓', building:'◆', reviewing:'⌕', delegating:'⇶', command:'›', tool:'⚙',
+      researching:'⌕', wrapping:'…', completed:'✓', failed:'!', stopping:'■'
+    };
     return `
-    <div class="desk status-${displayStatus}" data-id="${w.id}" onclick="openProfileLog('worker','${w.id}')">
+    <div class="desk status-${displayStatus}${justAssigned ? ' just-assigned' : ''}" data-id="${w.id}" onclick="openProfileLog('worker','${w.id}')">
       <div class="flag"></div>
       <div class="desk-top">
         <div class="nameplate">${escapeHtml(w.name)}</div>
@@ -2049,8 +2142,12 @@ function render(){
           <div class="arm right"></div>
         </div>
       </div>
-      <div class="sticky-note">
+      <div class="sticky-note ${current ? '' : 'empty'}">
         ${current ? escapeHtml(current.title) : 'awaiting next assignment'}${w.status==='working' ? '<span class="working-dot"></span>' : ''}
+      </div>
+      <div class="worker-activity phase-${activityPhase}" title="Live activity from the ${escapeHtml((floors.find(f=>f.id===w.floorId) || {}).agent || 'agent')} session">
+        <span class="activity-icon">${activityIcons[activityPhase] || '•'}</span>
+        <span>${escapeHtml(activityLabel)}</span>
       </div>
       ${queueBehind>0 ? `<div class="queue-note">+${queueBehind} more waiting</div>` : ''}
       <div class="desk-actions">
@@ -3166,6 +3263,8 @@ async function retryWorkerAgent(){
     return;
   }
   w.runtimeStatus = 'starting';
+  w.activityPhase = 'starting';
+  w.activityLabel = 'Restarting the task';
   await startWorkerAgent(w, w.tasks[0]);
   await saveAll();
   closeEditModal();
@@ -3191,6 +3290,8 @@ async function markTaskDone(){
   if(w.tasks.length && !w.sharedLeadSession) await startWorkerAgent(w, w.tasks[0]);
   if(w.sharedLeadSession) w.runtimeStatus = w.tasks.length ? 'delegated' : 'idle';
   else if(!w.tasks.length) w.runtimeStatus = 'idle';
+  w.activityPhase = w.tasks.length ? 'queued' : 'idle';
+  w.activityLabel = w.tasks.length ? 'Waiting for delegation' : 'Available';
   await saveAll();
   if(done) log(`${w.name} finished "${done.title}"`);
   if(w.tasks.length) log(`${w.name} moved on to "${w.tasks[0].title}"`);
@@ -3198,7 +3299,13 @@ async function markTaskDone(){
   render();
 }
 
-function tickClock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
+function tickClock(){
+  const now = new Date();
+  const isOvertime = now.getHours() >= 20;
+  document.getElementById('clock').textContent = now.toLocaleTimeString();
+  document.getElementById('shiftStatusLabel').textContent = isOvertime ? 'overtime' : 'open';
+  document.getElementById('shiftStatus').classList.toggle('overtime', isOvertime);
+}
 setInterval(tickClock,1000); tickClock();
 setInterval(render, 30000);
 setInterval(syncWorkerRuntime, 3000);

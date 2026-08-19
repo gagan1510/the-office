@@ -19,6 +19,7 @@ The application runs entirely on your computer. The Python server listens only o
 - Delegate multi-worker work through the CLI's native subagent support.
 - Return workers to the available pool as soon as implementation finishes.
 - View human-readable, live CLI activity by clicking a profile or worker.
+- See live employee phases such as reading code, editing files, running tests, building, reviewing, and coordinating delegated work.
 - Ask the floor lead questions about the onboarded codebase.
 - Use the separate Chat Room for ordinary Claude or Codex conversations.
 - Review combined changes before publishing.
@@ -160,6 +161,8 @@ Each floor also has an **Ask _name_** section. Those answers come from the persi
 ## Logs
 
 Click the Manager & Tech Lead or a worker profile to see the actual local CLI activity for its shared session. Logs are rendered in a concise human-readable format by default; raw JSON remains available from the log toolbar for debugging.
+
+Employee desks also show the latest activity inferred from structured Claude/Codex events. File-write tools appear as **Editing code**, common test commands appear as **Running tests**, and read, build, review, delegation, and command activity use their own labels and colors. When a CLI exposes only the shared orchestration session rather than individual subagent identities, assigned employees display that shared session's currently observed phase.
 
 The server holds live process output in memory, with up to 5,000 entries per profile. Restarting the server clears those in-memory logs, although browser-persisted floor and session metadata remains available.
 

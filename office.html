@@ -1,0 +1,3217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>smallcase // local agent workspace</title>
+<style>
+  :root{
+    --sky-a:#8FD1F0;
+    --sky-b:#CFF0DC;
+    --grass-a:#6FAF3E;
+    --grass-b:#5F9C34;
+    --dirt:#8B5A2B;
+    --dirt-dark:#6E4720;
+    --stone-a:#A8A8A0;
+    --stone-b:#8E8E86;
+    --panel:#C6C6C6;
+    --panel-dark:#8B8B8B;
+    --panel-light:#EAEAEA;
+    --ink:#1E1E1E;
+    --ink-dim:#4A4A4A;
+    --idle:#8A9490;
+    --working:#3E9E4E;
+    --working-dark:#2A7838;
+    --blocked:#D9782B;
+    --blocked-dark:#A85A1A;
+    --manager:#5B4FA8;
+    --manager-dark:#3E3576;
+    --lead:#287C8E;
+    --lead-dark:#195866;
+    --reception:#D9B02B;
+    --reception-dark:#A8830F;
+    --wood:#B08552;
+    --wood-dark:#8A6438;
+    --wood-darker:#5E4527;
+    --sticky:#F2D93B;
+    --plank-a:#C79A5E;
+    --plank-b:#B3854A;
+    --font: "Consolas", "Courier New", ui-monospace, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:var(--font);
+    color:var(--ink);
+    min-height:100vh;
+    position:relative;
+    overflow-x:hidden;
+    image-rendering:pixelated;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,0.05) 0 2px, transparent 2px 4px),
+      repeating-linear-gradient(90deg, rgba(0,0,0,0.05) 0 2px, transparent 2px 4px),
+      linear-gradient(180deg, var(--sky-a), var(--sky-b) 40%, var(--stone-a) 40%);
+  }
+
+  .wrap{ padding:20px 0 120px; position:relative; z-index:1;}
+
+  /* pixel button / panel bevel, classic inventory-UI look */
+  .bevel{
+    border:3px solid #000;
+    box-shadow:
+      inset 2px 2px 0 rgba(255,255,255,0.5),
+      inset -2px -2px 0 rgba(0,0,0,0.35);
+  }
+  .bevel-btn{
+    border:3px solid #000; cursor:pointer;
+    box-shadow:
+      inset 2px 2px 0 rgba(255,255,255,0.45),
+      inset -2px -2px 0 rgba(0,0,0,0.35);
+  }
+  .bevel-btn:active{
+    box-shadow:
+      inset -2px -2px 0 rgba(255,255,255,0.3),
+      inset 2px 2px 0 rgba(0,0,0,0.35);
+  }
+
+  header{
+    display:flex; justify-content:space-between; align-items:flex-end;
+    padding:12px 14px; margin-bottom:16px;
+    background:var(--panel);
+    flex-wrap:wrap; gap:12px;
+  }
+  .title-block .eyebrow{
+    color:var(--ink-dim); font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:700;
+  }
+  .title-block h1{
+    margin:4px 0 0; font-size:22px; letter-spacing:.03em; font-weight:700;
+    color:var(--ink); text-transform:uppercase;
+    display:flex; align-items:center; gap:10px;
+    text-shadow:2px 2px 0 rgba(255,255,255,0.4);
+  }
+  .open-sign{
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:10px; letter-spacing:.05em; text-transform:uppercase; font-weight:700;
+    color:#1E1E1E; background:var(--working); border:2px solid #000;
+    padding:3px 8px;
+  }
+  .open-sign .dot{ width:7px; height:7px; background:#DFF7DE; }
+
+  .clock-block{ text-align:right; font-size:11px; color:var(--ink-dim); font-weight:700; }
+  .clock-block .time{ font-size:18px; color:var(--ink); letter-spacing:.02em; }
+  .service-status{ margin-top:4px; font-size:9px; text-transform:uppercase; }
+  .service-status.online{ color:var(--working-dark); }
+  .service-status.offline{ color:#9B271C; }
+
+  /* floor/repo tabs */
+  .floor-tabs{
+    display:flex; align-items:center; gap:6px; margin-bottom:16px;
+    flex-wrap:wrap;
+  }
+  .floor-tab{
+    font-size:11.5px; letter-spacing:.01em; color:var(--ink); font-weight:700; text-transform:uppercase;
+    background:var(--panel); padding:8px 13px; cursor:pointer; display:flex; align-items:center; gap:7px;
+    border:3px solid #000;
+    box-shadow: inset 2px 2px 0 rgba(255,255,255,0.4), inset -2px -2px 0 rgba(0,0,0,0.3);
+  }
+  .floor-tab .n{
+    font-size:10px; color:#fff; background:var(--ink-dim);
+    border:2px solid #000; padding:0 5px; min-width:14px; text-align:center;
+  }
+  .floor-tab.active{ background:var(--working); color:#0d2b12; }
+  .floor-tab.active .n{ background:var(--working-dark); color:#fff; }
+  .floor-tab .agent-mini{ font-size:8px; opacity:.75; }
+  .floor-tab-add{
+    font-size:11.5px; color:var(--ink); font-weight:700; text-transform:uppercase; background:var(--panel-light);
+    border:3px dashed #000; padding:8px 13px; cursor:pointer;
+  }
+  .floor-tab-add:hover{ background:var(--working); }
+
+  .counts{ display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
+  .count-chip{
+    background:var(--panel); border:2px solid #000;
+    padding:6px 11px; font-size:11px; letter-spacing:.02em; font-weight:700;
+    display:flex; align-items:center; gap:7px; color:var(--ink-dim); text-transform:uppercase;
+  }
+  .dot{ width:8px; height:8px; display:inline-block; border:1px solid #000; }
+  .dot.idle{ background:var(--idle); }
+  .dot.working{ background:var(--working); }
+  .dot.blocked{ background:var(--blocked); }
+  .count-chip b{ color:var(--ink); }
+
+  /* reception counter (Pam's desk) */
+  .reception-card{
+    background:var(--panel);
+    border:3px solid #000;
+    box-shadow: inset 2px 2px 0 rgba(255,255,255,0.4), inset -2px -2px 0 rgba(0,0,0,0.3);
+    padding:14px 16px; margin-bottom:16px;
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    flex-wrap:wrap;
+  }
+  .reception-left{ display:flex; align-items:center; gap:14px; }
+  .profile-link{ cursor:pointer; }
+  .profile-link:hover .eyebrow{ text-decoration:underline; }
+  .reception-info .eyebrow{ color:var(--reception-dark); font-size:10px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
+  .reception-info .desc{ font-size:11.5px; color:var(--ink-dim); margin-top:3px; font-weight:600; }
+  .reception-card button{
+    font-family:var(--font); font-size:11.5px; font-weight:700; letter-spacing:.02em; text-transform:uppercase;
+    background:var(--reception); color:#3a2c05;
+    padding:9px 15px; border:3px solid #000;
+    box-shadow: inset 2px 2px 0 rgba(255,255,255,0.5), inset -2px -2px 0 rgba(0,0,0,0.35);
+  }
+  .reception-card button:active{ box-shadow: inset -2px -2px 0 rgba(255,255,255,0.3), inset 2px 2px 0 rgba(0,0,0,0.35); }
+  .bell{
+    width:24px; height:18px; background:var(--reception);
+    border:2px solid #000; position:relative; flex:none;
+  }
+  .bell::after{ content:""; position:absolute; bottom:-6px; left:9px; width:6px; height:6px; background:var(--reception-dark); border:1px solid #000; }
+
+  /* combined manager and tech-lead desk */
+  .manager-card{
+    background:var(--panel);
+    border:3px solid #000;
+    box-shadow: inset 2px 2px 0 rgba(255,255,255,0.4), inset -2px -2px 0 rgba(0,0,0,0.3);
+    padding:14px 16px; margin-bottom:0;
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    flex-wrap:wrap;
+  }
+  .manager-left{ display:flex; align-items:center; gap:14px; }
+  .manager-info .eyebrow{ color:var(--manager-dark); font-size:10px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
+  .manager-info .desc{ font-size:11.5px; color:var(--ink-dim); margin-top:3px; font-weight:600; }
+  .manager-card button{
+    font-family:var(--font); font-size:11.5px; font-weight:700; letter-spacing:.02em; text-transform:uppercase;
+    background:var(--manager); color:#fff;
+    padding:9px 15px; border:3px solid #000;
+    box-shadow: inset 2px 2px 0 rgba(255,255,255,0.35), inset -2px -2px 0 rgba(0,0,0,0.35);
+  }
+  .manager-card button:active{ box-shadow: inset -2px -2px 0 rgba(255,255,255,0.25), inset 2px 2px 0 rgba(0,0,0,0.35); }
+  .manager-actions{ display:flex; gap:7px; flex-wrap:wrap; }
+  .manager-card button.secondary{ background:var(--panel-light); color:var(--ink); }
+  .manager-card.combined-role-card{ border-left-color:var(--lead); }
+  .manager-card.combined-role-card .manager-info .eyebrow{ color:var(--lead-dark); }
+  .runner-tag{ display:inline-block; border:2px solid #000; padding:1px 5px; margin-left:4px; color:#fff; text-transform:uppercase; }
+  .runner-tag.claude{ background:#B8643E; }
+  .runner-tag.codex{ background:#246B5A; }
+  .launch-command{
+    margin-top:5px; max-width:620px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    font-size:10px; color:var(--ink-dim);
+  }
+  .lead-card{
+    background:var(--panel); border:3px solid #000;
+    box-shadow:inset 2px 2px 0 rgba(255,255,255,.4), inset -2px -2px 0 rgba(0,0,0,.3);
+    padding:12px 16px; margin-bottom:16px; display:flex; align-items:center;
+    justify-content:space-between; gap:16px; flex-wrap:wrap;
+  }
+  .lead-left{ display:flex; align-items:center; gap:14px; }
+  .lead-icon{
+    width:36px; height:36px; flex:none; display:grid; place-items:center;
+    color:#fff; background:var(--lead); border:3px solid #000; font-size:16px; font-weight:700;
+  }
+  .lead-info .eyebrow{ color:var(--lead-dark); font-size:10px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
+  .lead-info .desc{ font-size:11.5px; color:var(--ink-dim); margin-top:3px; font-weight:600; }
+  .lead-card button{
+    font-family:var(--font); font-size:11.5px; font-weight:700; text-transform:uppercase;
+    background:var(--lead); color:#fff; padding:9px 15px; border:3px solid #000; cursor:pointer;
+    box-shadow:inset 2px 2px 0 rgba(255,255,255,.35), inset -2px -2px 0 rgba(0,0,0,.35);
+  }
+
+  /* office floor: stone wall strip + grass-block carpet */
+  .floor-decor{
+    position:relative; height:28px; margin-bottom:0;
+    background:
+      repeating-linear-gradient(90deg, var(--stone-b) 0 18px, var(--stone-a) 18px 36px);
+    border:3px solid #000; border-bottom:none;
+  }
+  .floor-decor .pane{
+    position:absolute; top:5px; bottom:5px; width:14px; background:var(--sky-a); border:2px solid #000;
+  }
+  .floor{
+    display:grid;
+    grid-template-columns: repeat(auto-fill, minmax(206px, 1fr));
+    gap:14px; position:relative;
+    background:
+      repeating-conic-gradient(var(--grass-a) 0% 25%, var(--grass-b) 0% 50%) 0 0 / 20px 20px;
+    padding:18px; border:3px solid #000; border-top:none;
+  }
+  .plant{ position:absolute; width:30px; height:38px; pointer-events:none; z-index:2; }
+  .plant.tl{ top:8px; left:8px; }
+  .plant.br{ bottom:8px; right:8px; }
+  .plant .pot{ position:absolute; bottom:0; left:5px; width:20px; height:14px; background:var(--dirt); border:2px solid #000; }
+  .plant .leaf{ position:absolute; bottom:10px; width:14px; height:20px; background:var(--working); border:2px solid #000; }
+  .plant .leaf.l1{ left:0px; }
+  .plant .leaf.l2{ left:8px; background:var(--working-dark); }
+  .plant .leaf.l3{ left:16px; }
+
+  /* two-column floor layout */
+  .floor-content-row {
+    --floor-sidebar-width: 460px;
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    justify-content: center;
+    margin-bottom: 16px;
+  }
+  .floor-left-col {
+    flex: 0 0 var(--floor-sidebar-width);
+    width: var(--floor-sidebar-width);
+    min-width: 0;
+    max-width: var(--floor-sidebar-width);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .floor-left-col > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .floor-left-col .manager-card {
+    height: 300px;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    justify-content: flex-start;
+    overflow: hidden;
+  }
+  .floor-left-col .manager-left {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 0;
+    align-items: flex-start;
+  }
+  .floor-left-col .manager-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+    max-height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overflow-wrap: anywhere;
+  }
+  .floor-left-col .manager-info .launch-command {
+    max-width: 100%;
+  }
+  .floor-left-col .manager-actions {
+    flex: none;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .floor-left-col .manager-actions > * {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .floor-left-col .manager-actions .badge {
+    white-space: normal;
+  }
+  .floor-right-col {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 1150px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .floor-left-col #leadQuestionSection {
+    height: 420px;
+    max-height: none;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .floor-left-col #leadQuestionSection .chat-card-head,
+  .floor-left-col #leadQuestionSection .chat-card-head > div,
+  .floor-left-col #leadQuestionSection .chat-compose,
+  .floor-left-col #leadQuestionSection .chat-message {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .floor-left-col #leadQuestionSection .chat-card-title,
+  .floor-left-col #leadQuestionSection .chat-card-subtitle {
+    overflow-wrap: anywhere;
+  }
+  .floor-left-col #leadQuestionSection .chat-thread {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .floor-left-col #leadQuestionSection .chat-message,
+  .floor-left-col #leadQuestionSection .chat-message * {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .floor-left-col #leadQuestionSection .chat-message.assistant pre,
+  .floor-left-col #leadQuestionSection .chat-message.assistant pre code {
+    white-space: pre-wrap;
+    overflow-x: hidden;
+  }
+  .floor-left-col #leadQuestionSection .chat-compose {
+    margin-top: auto;
+  }
+
+  /* desk card */
+  .desk{
+    background:var(--panel-light);
+    border:3px solid #000;
+    padding:10px 10px 10px;
+    position:relative;
+    min-height:212px;
+    display:flex; flex-direction:column;
+    box-shadow: inset 2px 2px 0 rgba(255,255,255,0.5), inset -2px -2px 0 rgba(0,0,0,0.15);
+  }
+  .desk.status-working{ background:#E4F5E4; }
+  .desk.status-blocked{ background:#FBE7D2; }
+  .desk.status-idle{ background:var(--panel); }
+  .desk.status-review{ background:#DDEEF7; }
+
+  .desk-top{ display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+  .nameplate{
+    font-size:11.5px; font-weight:700; color:#fff; text-transform:uppercase; letter-spacing:.02em;
+    background:var(--wood); border:2px solid #000;
+    padding:2px 7px;
+  }
+  .badge{
+    font-size:9px; letter-spacing:.04em; text-transform:uppercase; font-weight:700;
+    padding:2px 6px; white-space:nowrap; border:2px solid #000; color:#fff;
+  }
+  .badge.working{ background:var(--working); }
+  .badge.blocked{ background:var(--blocked); }
+  .badge.idle{ background:var(--idle); }
+  .badge.review{ background:var(--lead); }
+
+  /* desk surface: pixel plank pattern with monitor + keyboard + mug */
+  .desk-surface{
+    margin-top:8px; height:58px; position:relative;
+    background:repeating-linear-gradient(90deg, var(--plank-a) 0 12px, var(--plank-b) 12px 24px);
+    border:2px solid #000;
+  }
+  .monitor{
+    position:absolute; top:6px; left:50%; transform:translateX(-50%);
+    width:42px; height:26px; background:#2B2B2B; border:2px solid #000;
+  }
+  .monitor::after{ content:""; position:absolute; left:3px; right:3px; top:3px; bottom:3px; }
+  .desk.status-working .monitor::after{ background:var(--working); }
+  .desk.status-blocked .monitor::after{ background:var(--blocked); }
+  .desk.status-idle .monitor::after{ background:#555; }
+  .desk.status-review .monitor::after{ background:var(--lead); }
+  .monitor-stand{ position:absolute; bottom:-5px; left:50%; transform:translateX(-50%); width:12px; height:5px; background:#1c1e21; }
+  .keyboard{ position:absolute; bottom:5px; left:50%; transform:translateX(-50%); width:30px; height:7px; background:#DAD2BC; border:2px solid #000; }
+  .mug{ position:absolute; bottom:5px; right:8px; width:9px; height:9px; background:var(--blocked); border:2px solid #000; }
+
+  /* person + chair — blocky voxel figure */
+  .person-row{ display:flex; align-items:flex-end; gap:12px; margin-top:8px; position:relative; height:48px; }
+  .chair-back{
+    position:absolute; bottom:0; left:6px; width:32px; height:30px;
+    background:var(--idle); border:2px solid #000; z-index:0;
+  }
+  .desk.status-working .chair-back{ background:var(--working); }
+  .desk.status-blocked .chair-back{ background:var(--blocked); }
+  .desk.status-review .chair-back{ background:var(--lead); }
+  .person{ width:36px; height:46px; position:relative; flex:none; z-index:1; }
+  .person .hair{ position:absolute; top:0; left:8px; width:20px; height:7px; background:#2a201a; border:2px solid #000; border-bottom:none; }
+  .person .head{ position:absolute; top:2px; left:8px; width:20px; height:16px; border:2px solid #000; }
+  .person .torso{ position:absolute; top:18px; left:5px; width:26px; height:20px; border:2px solid #000; }
+  .person .arm{ position:absolute; top:20px; width:7px; height:16px; background:#c99a72; border:2px solid #000; }
+  .person .arm.left{ left:0px; transform-origin: top center; }
+  .person .arm.right{ right:0px; transform-origin: top center; }
+
+  .desk.status-working .torso{ background:var(--working); }
+  .desk.status-blocked .torso{ background:var(--blocked); }
+  .desk.status-idle .torso{ background:var(--idle); }
+  .desk.status-review .torso{ background:var(--lead); }
+
+  .desk.status-working .arm.left{ animation: typeL .5s steps(2) infinite alternate; }
+  .desk.status-working .arm.right{ animation: typeR .5s steps(2) infinite alternate; }
+  @keyframes typeL{ from{ transform:rotate(8deg); } to{ transform:rotate(-8deg); } }
+  @keyframes typeR{ from{ transform:rotate(-8deg); } to{ transform:rotate(8deg); } }
+
+  .desk.status-idle .person{ animation: breathe 2.4s steps(2) infinite; }
+  @keyframes breathe{ 0%,100%{ transform:translateY(0); } 50%{ transform:translateY(-2px); } }
+
+  .flag{
+    position:absolute; top:-2px; left:28px; width:12px; height:9px;
+    background:var(--blocked); border:2px solid #000; display:none; z-index:2;
+  }
+  .flag::after{ content:""; position:absolute; left:-2px; top:-2px; width:2px; height:18px; background:#000; }
+  .desk.status-blocked .flag{ display:block; }
+
+  /* sticky note = current task */
+  .sticky-note{
+    margin-top:8px; font-size:11px; color:#3a2c05; line-height:1.35; font-weight:600;
+    background:var(--sticky); border:2px solid #000;
+    padding:7px 8px; flex:1; white-space:pre-wrap; word-break:break-word;
+    position:relative;
+  }
+  .working-dot{
+    display:inline-block; width:6px; height:6px; background:var(--working-dark);
+    margin-left:4px; animation: blink 1s steps(1) infinite; border:1px solid #000;
+  }
+  @keyframes blink{ 50%{ opacity:0.1; } }
+  .queue-note{ font-size:10px; color:var(--ink-dim); margin-top:6px; font-weight:700; text-transform:uppercase; letter-spacing:.02em; }
+
+  .desk-actions{ display:flex; gap:6px; margin-top:8px; }
+  .desk-actions button{
+    font-family:var(--font); font-size:10px; letter-spacing:.02em; font-weight:700; text-transform:uppercase;
+    background:var(--panel); border:2px solid #000; color:var(--ink);
+    padding:4px 8px; cursor:pointer;
+  }
+  .desk-actions button:hover{ background:var(--working); }
+
+  /* modal */
+  .modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,0.55); display:none; align-items:center; justify-content:center; z-index:100; }
+  .modal-backdrop.open{ display:flex; }
+  .modal{
+    background:var(--panel); border:4px solid #000;
+    box-shadow: inset 3px 3px 0 rgba(255,255,255,0.4), inset -3px -3px 0 rgba(0,0,0,0.3);
+    width:min(430px, 90vw); padding:20px; max-height:85vh; overflow:auto;
+  }
+  .modal h2{ margin:0 0 4px; font-size:15px; text-transform:uppercase; letter-spacing:.03em; color:var(--ink); }
+  .modal p.hint{ font-size:11.5px; color:var(--ink-dim); margin:0 0 14px; font-weight:600; }
+  .modal label{ font-size:11px; color:var(--ink-dim); display:block; margin-bottom:5px; letter-spacing:.02em; font-weight:700; text-transform:uppercase; }
+  .modal input, .modal select, .modal textarea{
+    width:100%; background:#fff; border:2px solid #000; color:var(--ink);
+    font-family:var(--font); font-size:13px; padding:8px; margin-bottom:14px;
+  }
+  .modal textarea{ resize:vertical; min-height:50px; }
+  .field-group{ border:2px solid #000; padding:10px; margin-bottom:14px; background:rgba(255,255,255,.25); }
+  .field-group label:last-of-type, .field-group input:last-child{ margin-bottom:0; }
+  .path-picker{ display:flex; align-items:stretch; gap:7px; margin-bottom:14px; }
+  .path-picker input{ margin-bottom:0; min-width:0; }
+  .path-picker button{
+    flex:none; border:2px solid #000; background:var(--panel-light); color:var(--ink);
+    font:700 10px var(--font); text-transform:uppercase; padding:6px 10px; cursor:pointer;
+  }
+  .path-picker button:hover{ background:var(--working); }
+  .path-picker button.icon-button{ width:38px; padding:4px; font-size:17px; line-height:1; }
+  .field-note{ margin:-7px 0 12px; color:var(--ink-dim); font-size:9px; line-height:1.35; }
+  .folder-browser-list{
+    border:2px solid #000; background:#fff; min-height:180px; max-height:42vh;
+    overflow:auto; margin-bottom:12px; padding:5px;
+  }
+  .folder-browser-entry{
+    display:block; width:100%; text-align:left; border:0; border-bottom:1px solid #bbb;
+    background:#fff; color:var(--ink); font:600 11px var(--font); padding:8px; cursor:pointer;
+  }
+  .folder-browser-entry:hover{ background:#DFF0D8; }
+  .folder-browser-status{ min-height:16px; margin-bottom:8px; color:var(--ink-dim); font-size:10px; }
+  .conditional-field[hidden]{ display:none; }
+  .modal-actions{ display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+  .modal-actions button{
+    font-family:var(--font); font-size:11.5px; font-weight:700; letter-spacing:.02em; text-transform:uppercase;
+    padding:9px 14px; cursor:pointer; border:2px solid #000; background:var(--panel-light); color:var(--ink);
+  }
+  .modal-actions button.primary{ background:var(--working); }
+  .modal-actions button.danger{ background:var(--blocked); }
+  .modal-actions button:hover{ filter:brightness(0.95); }
+
+  .queue-list{ margin-bottom:14px; }
+  .queue-item{
+    display:flex; justify-content:space-between; align-items:center; gap:8px;
+    font-size:11.5px; color:var(--ink-dim); border:2px solid #000; padding:6px 9px; margin-bottom:6px;
+    background:#fff; font-weight:600;
+  }
+  .queue-item button{
+    font-family:var(--font); font-size:10px; background:var(--panel); border:2px solid #000; font-weight:700;
+    color:var(--ink); cursor:pointer; padding:2px 7px;
+  }
+  .queue-item button:hover{ background:var(--blocked); }
+  .log-toolbar{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .log-toolbar button{
+    font-family:var(--font); font-size:10px; font-weight:700; text-transform:uppercase;
+    padding:6px 9px; border:2px solid #000; background:var(--panel-light); cursor:pointer;
+  }
+  .log-status{ font-size:10px; color:var(--ink-dim); font-weight:700; }
+  .log-output{
+    min-height:280px; max-height:52vh; overflow:auto; margin:0; padding:10px;
+    color:#B8F5C2; background:#171B19; border:3px solid #000; font:11px/1.45 var(--font);
+    white-space:pre-wrap; overflow-wrap:anywhere; user-select:text;
+  }
+  .review-summary, .review-issues{
+    border:2px solid #000; background:var(--panel-light); padding:10px;
+    font-size:11px; line-height:1.45; white-space:pre-wrap;
+  }
+  .review-issues{ margin-top:8px; background:#F4D7C1; }
+  .publish-warning{
+    margin:12px 0; padding:9px; border:2px solid #000; background:var(--sticky);
+    font-size:10px; font-weight:700; line-height:1.4;
+  }
+  .publish-status{ min-height:16px; color:var(--ink-dim); font-size:10px; font-weight:700; }
+
+  /* hotbar footer */
+  .ticker-wrap{
+    position:fixed; bottom:0; left:0; right:0; background:var(--panel); border-top:3px solid #000;
+    overflow:hidden; height:36px; z-index:40; display:flex; align-items:center;
+  }
+  .ticker-label{
+    flex:none; font-size:10px; letter-spacing:.06em; text-transform:uppercase; font-weight:700;
+    color:#fff; background:var(--manager); border-right:3px solid #000; padding:0 12px; height:100%;
+    display:flex; align-items:center;
+  }
+  .ticker-track{ white-space:nowrap; font-size:11.5px; color:var(--ink); font-weight:600; padding-left:16px; }
+  .ticker-track span{ margin-right:34px; }
+
+  /* polished local-ops theme */
+  :root{
+    --sky-a:#B9D9E7;
+    --sky-b:#E8F0DE;
+    --stone-a:#D8CDBD;
+    --stone-b:#C8BAA7;
+    --panel:#F0E8DA;
+    --panel-dark:#A99C89;
+    --panel-light:#FFF9EF;
+    --ink:#202521;
+    --ink-dim:#5D665F;
+    --idle:#89948E;
+    --working:#62A66D;
+    --working-dark:#367642;
+    --blocked:#D77B49;
+    --blocked-dark:#A94D2B;
+    --manager:#7163B3;
+    --manager-dark:#4D4285;
+    --lead:#3C8291;
+    --lead-dark:#245E69;
+    --reception:#E5B94B;
+    --reception-dark:#9C7417;
+    --wood:#A87749;
+    --wood-dark:#7B5231;
+    --sticky:#F7DA68;
+    --font:"JetBrains Mono","SFMono-Regular","Cascadia Code","Liberation Mono","Consolas",monospace;
+    --line:#242923;
+    --shadow:4px 4px 0 rgba(36,41,35,.88);
+    --shadow-small:2px 2px 0 rgba(36,41,35,.8);
+  }
+  body{
+    background:
+      radial-gradient(circle at 12% 8%, rgba(255,255,255,.7) 0 7%, transparent 24%),
+      linear-gradient(180deg, var(--sky-a) 0 33%, var(--sky-b) 33% 45%, #C9BEAD 45% 100%);
+  }
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; opacity:.22;
+    background-image:linear-gradient(rgba(32,37,33,.1) 1px,transparent 1px),linear-gradient(90deg,rgba(32,37,33,.1) 1px,transparent 1px);
+    background-size:8px 8px;
+  }
+  .wrap{ padding:24px 12px 112px; }
+  header{
+    position:relative; align-items:center; padding:15px 17px; margin-bottom:18px;
+    color:#F8F4EA; background:#27312F; border:2px solid var(--line); box-shadow:var(--shadow);
+  }
+  header::before{
+    content:""; position:absolute; left:0; right:0; top:0; height:4px;
+    background:linear-gradient(90deg,var(--reception) 0 28%,var(--lead) 28% 62%,var(--working) 62%);
+  }
+  .title-block .eyebrow{ color:#B9CCC5; }
+  .title-block h1{ color:#FFF9EF; font-size:24px; text-shadow:2px 2px 0 #111; }
+  .open-sign{ color:#102416; border-color:#0E1712; background:#82C78B; text-shadow:none; box-shadow:none; }
+  .clock-block,.clock-block .time{ color:#F8F4EA; }
+  .service-status.online{ color:#9EE4A7; }
+  .service-status.offline{ color:#FF9A7B; }
+
+  .floor-tabs{ gap:9px; margin-bottom:18px; }
+  .floor-tab,.floor-tab-add{
+    border:2px solid var(--line); padding:9px 13px; box-shadow:var(--shadow-small);
+    transition:transform .12s ease,box-shadow .12s ease,background .12s ease;
+  }
+  .floor-tab{ background:var(--panel-light); }
+  .floor-tab:hover,.floor-tab-add:hover{ transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--line); }
+  .floor-tab.active{ background:#82C78B; }
+  .floor-tab .n{ border:0; padding:2px 6px; }
+  .floor-tab-add{ background:rgba(255,249,239,.7); }
+  .floor-tab .agent-mini{ padding:2px 4px; background:rgba(32,37,33,.1); opacity:1; }
+
+  .reception-card,.manager-card,.lead-card{
+    border:2px solid var(--line); box-shadow:var(--shadow); background:var(--panel-light);
+    transition:transform .14s ease,box-shadow .14s ease;
+  }
+  .reception-card:hover,.manager-card:hover,.lead-card:hover{ transform:translateY(-1px); box-shadow:5px 5px 0 rgba(36,41,35,.88); }
+  .reception-card{ border-left:8px solid var(--reception); }
+  .manager-card{ border-left:8px solid var(--manager); margin-bottom:0; }
+  .manager-card.combined-role-card{ border-left-color:var(--lead); }
+  .manager-card.combined-role-card .manager-info .eyebrow{ color:var(--lead-dark); text-transform:none; }
+  .lead-card{ border-left:8px solid var(--lead); }
+  .reception-info .desc,.manager-info .desc,.lead-info .desc{ line-height:1.5; }
+  .lead-icon{ border:2px solid var(--line); box-shadow:var(--shadow-small); }
+  .bell{ box-shadow:var(--shadow-small); }
+  .launch-command{
+    display:inline-block; margin-top:7px; padding:4px 7px; background:#EEE6D8;
+    border:1px solid #BDB09E; color:#4F5851;
+  }
+
+  button{ transition:transform .1s ease,box-shadow .1s ease,filter .1s ease; }
+  button:not(:disabled):hover{ filter:brightness(1.03); }
+  button:not(:disabled):active{ transform:translate(2px,2px); box-shadow:none!important; }
+  button:disabled{ cursor:not-allowed!important; opacity:.48; filter:grayscale(.3); }
+  .reception-card button,.manager-card button,.lead-card button{
+    border:2px solid var(--line); box-shadow:var(--shadow-small); cursor:pointer;
+  }
+  :focus-visible{ outline:3px solid #1A6DA0!important; outline-offset:3px; }
+
+  .counts{ gap:8px; }
+  .count-chip{ border:1px solid #847969; background:rgba(255,249,239,.86); padding:6px 10px; box-shadow:1px 1px 0 rgba(36,41,35,.45); }
+  .count-chip .dot{ border:0; box-shadow:1px 1px 0 var(--line); }
+
+  .floor-decor{ height:34px; border:2px solid var(--line); border-bottom:0; box-shadow:var(--shadow); }
+  .floor-decor .pane{ width:18px; background:#C8EBF5; border:2px solid var(--line); box-shadow:inset 2px 2px 0 rgba(255,255,255,.5); }
+  .floor{
+    gap:18px; padding:22px; border:2px solid var(--line); border-top:0; box-shadow:var(--shadow);
+    background:
+      linear-gradient(rgba(255,255,255,.08),rgba(255,255,255,.08)),
+      repeating-conic-gradient(#6FAF67 0 25%,#639D5C 0 50%) 0 0/24px 24px;
+  }
+  .desk{
+    border:2px solid var(--line); padding:12px; min-height:222px; box-shadow:var(--shadow-small);
+    transition:transform .14s ease,box-shadow .14s ease;
+  }
+  .desk:hover{ transform:translateY(-3px); box-shadow:4px 5px 0 rgba(36,41,35,.75); }
+  .desk.status-working{ background:#EDF8E9; }
+  .desk.status-blocked{ background:#FFF0E4; }
+  .desk.status-review{ background:#E8F4F7; }
+  .nameplate,.badge,.desk-surface,.sticky-note{ border-width:1px; box-shadow:1px 1px 0 rgba(36,41,35,.55); }
+  .nameplate{ padding:4px 8px; background:#7D5A3B; }
+  .badge{ padding:4px 7px; border-color:var(--line); }
+  .desk-surface{ margin-top:10px; }
+  .sticky-note{ padding:9px 10px; color:#493A13; }
+  .desk-actions button{ background:#FFF9EF; border:1px solid var(--line); box-shadow:1px 1px 0 var(--line); }
+
+  .modal-backdrop{ background:rgba(24,29,26,.7); backdrop-filter:blur(3px); padding:18px; }
+  .modal{
+    width:min(470px,94vw); padding:22px; background:var(--panel-light);
+    border:2px solid var(--line); box-shadow:7px 7px 0 rgba(15,18,16,.75);
+  }
+  .modal h2{ font-size:17px; margin-bottom:6px; }
+  .modal p.hint{ line-height:1.5; margin-bottom:18px; }
+  .modal label{ color:#4E5A52; }
+  .modal input,.modal select,.modal textarea{
+    background:#FFFEFA; border:1px solid #766E61; padding:10px; box-shadow:inset 2px 2px 0 rgba(80,70,55,.08);
+  }
+  .modal input:focus,.modal select:focus,.modal textarea:focus{ border-color:#1A6DA0; background:#fff; }
+  .field-group{ border:1px solid #A89C8B; padding:13px; background:#F5EDDF; }
+  .path-picker button,.modal-actions button,.log-toolbar button{
+    border:1px solid var(--line); box-shadow:var(--shadow-small); background:#F5EDDF;
+  }
+  .modal-actions{ padding-top:4px; }
+  .modal-actions button.primary{ background:#72B77C; }
+  .modal-actions button.danger{ background:#E48859; }
+  .folder-browser-list{ border:1px solid #766E61; padding:0; background:#FFFEFA; }
+  .folder-browser-entry{ border-bottom:1px solid #DED5C8; padding:10px 11px; }
+  .folder-browser-entry:hover{ background:#E8F4E5; }
+  .log-output{ border:2px solid #111713; background:#151B18; color:#BCEFC4; padding:14px; box-shadow:inset 0 0 0 2px #26332C; }
+  .review-summary,.review-issues{ border:1px solid #887F72; }
+
+  .ticker-wrap{ height:40px; border-top:2px solid var(--line); background:#F5EDDF; box-shadow:0 -3px 0 rgba(36,41,35,.16); }
+  .ticker-label{ background:#27312F; border-right:2px solid var(--line); padding:0 16px; }
+  .ticker-track{ color:#3B443E; }
+
+  .chat-card{
+    margin-bottom:16px; padding:15px; background:var(--panel-light); border:2px solid var(--line);
+    box-shadow:var(--shadow); border-left:8px solid #4A7266;
+  }
+  .chat-card.lead-chat{ border-left-color:var(--lead); }
+  .chat-card-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:10px; }
+  .chat-card-title{ font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:#315448; }
+  .lead-chat .chat-card-title{ color:var(--lead-dark); }
+  .chat-card-subtitle{ margin-top:3px; color:var(--ink-dim); font-size:10px; line-height:1.4; }
+  .chat-thread{
+    display:flex; flex-direction:column; gap:8px; max-height:260px; overflow:auto;
+    padding:10px; margin-bottom:10px; border:1px solid #A99D8B; background:#F8F1E6;
+  }
+  .chat-thread:empty{ display:none; }
+  .chat-message{ max-width:88%; padding:9px 10px; border:1px solid var(--line); font-size:11px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .chat-message.user{ align-self:flex-end; background:#DCEDE1; box-shadow:2px 2px 0 #7A9A82; }
+  .chat-message.assistant{ align-self:flex-start; background:#FFFDF8; box-shadow:2px 2px 0 #B5AA9B; white-space:normal; }
+  .chat-message.error{ background:#FFE5D7; color:#7D2F1C; }
+  .chat-message-meta{ display:block; margin-bottom:4px; color:var(--ink-dim); font-size:8px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
+  .chat-message.assistant h1,.chat-message.assistant h2,.chat-message.assistant h3{ font-weight:800; color:var(--ink); margin:6px 0 3px; }
+  .chat-message.assistant h1{ font-size:13px; }
+  .chat-message.assistant h2{ font-size:12px; }
+  .chat-message.assistant h3{ font-size:11px; }
+  .chat-message.assistant code{ font-family:var(--font); background:var(--panel); padding:1px 4px; border:1px solid var(--panel-dark); border-radius:2px; }
+  .chat-message.assistant pre{ background:var(--panel); border:2px solid var(--panel-dark); padding:8px; overflow-x:auto; margin:4px 0; }
+  .chat-message.assistant pre code{ background:none; border:none; padding:0; }
+  .chat-message.assistant ul,.chat-message.assistant ol{ padding-left:1.2em; margin:3px 0; }
+  .chat-message.assistant li{ margin-bottom:2px; }
+  .chat-message.assistant blockquote{ border-left:3px solid var(--panel-dark); margin:3px 0 3px 0; padding-left:8px; color:var(--ink-dim); }
+  .chat-message.assistant hr{ border:none; border-top:2px solid var(--panel-dark); margin:8px 0; }
+  .chat-message.assistant p{ margin:0 0 6px; }
+  .chat-message.assistant p:last-child{ margin-bottom:0; }
+  .chat-message.assistant strong{ font-weight:800; }
+  .chat-message.assistant em{ font-style:italic; }
+  .chat-compose{ display:grid; grid-template-columns:120px minmax(0,1fr) auto; gap:8px; align-items:stretch; }
+  .lead-chat .chat-compose{ grid-template-columns:minmax(0,1fr) auto; }
+  .chat-compose select,.chat-compose textarea{
+    width:100%; min-height:42px; margin:0; padding:9px; color:var(--ink); background:#FFFEFA;
+    border:1px solid #766E61; font:11px/1.4 var(--font); resize:vertical;
+  }
+  .chat-compose select{ min-height:42px; resize:none; }
+  .chat-compose button{
+    min-width:82px; border:2px solid var(--line); background:#72B77C; color:#14261A;
+    box-shadow:var(--shadow-small); font:800 10px var(--font); text-transform:uppercase; cursor:pointer;
+  }
+  .chat-empty{ color:var(--ink-dim); font-size:10px; padding:2px 0; }
+  .section-nav{ display:flex; gap:8px; margin-bottom:16px; }
+  .section-nav button{
+    padding:9px 13px; border:2px solid var(--line); background:rgba(255,249,239,.82);
+    color:var(--ink-dim); box-shadow:var(--shadow-small); cursor:pointer;
+    font:800 10px var(--font); letter-spacing:.06em; text-transform:uppercase;
+  }
+  .section-nav button.active{ background:#27312F; color:#FFF9EF; transform:translate(1px,1px); box-shadow:1px 1px 0 var(--line); }
+  .app-section[hidden]{ display:none!important; }
+  #plainChatSection .chat-card{ min-height:360px; }
+  #plainChatSection .chat-thread{ max-height:52vh; min-height:220px; }
+
+  @media (max-width:1100px){
+    .floor-content-row{ --floor-sidebar-width:400px; }
+  }
+
+  @media (max-width:760px){
+    .floor-content-row{ --floor-sidebar-width:380px; }
+  }
+
+  @media (max-width:680px){
+    .wrap{ padding:12px 8px 92px; }
+    header{ align-items:flex-start; }
+    .title-block h1{ font-size:19px; }
+    .clock-block{ text-align:left; }
+    .reception-card,.manager-card,.lead-card{ padding:13px; }
+    .reception-left,.manager-left,.lead-left{ align-items:flex-start; }
+    .manager-actions{ width:100%; }
+    .manager-actions button{ flex:1; }
+    .floor{ grid-template-columns:1fr; padding:15px; }
+    .modal{ padding:17px; max-height:92vh; }
+    .chat-compose,.lead-chat .chat-compose{ grid-template-columns:1fr; }
+    .chat-message{ max-width:96%; }
+    .path-picker{ flex-wrap:wrap; }
+    .path-picker input{ flex:1 0 100%; }
+    .path-picker button:not(.icon-button){ flex:1; }
+    .ticker-label{ display:none; }
+    .floor-content-row { flex-direction: column; }
+    .floor-left-col {
+      flex: none;
+      width: 100%;
+      max-width: 100%;
+    }
+    .floor-right-col {
+      width: 100%;
+      max-width: 100%;
+    }
+    .floor-left-col .manager-card {
+      height: auto;
+      overflow: visible;
+    }
+    .floor-left-col .manager-info {
+      max-height: none;
+      overflow: visible;
+    }
+    .floor-left-col #leadQuestionSection .chat-thread {
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    .floor-left-col #leadQuestionSection {
+      height: auto;
+      overflow: visible;
+    }
+  }
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{ animation-duration:.01ms!important; animation-iteration-count:1!important; transition:none!important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title-block">
+      <div class="eyebrow">local agent workspace</div>
+      <h1>smallcase <span class="open-sign"><span class="dot"></span>open</span></h1>
+    </div>
+    <div class="clock-block">
+      <div>shift status</div>
+      <div class="time" id="clock">--:--:--</div>
+      <div class="service-status" id="agentServiceStatus">agent service…</div>
+    </div>
+  </header>
+
+  <nav class="section-nav" aria-label="Office sections">
+    <button id="officeSectionButton" class="active" onclick="switchOfficeSection('office')">▦ Office floor</button>
+    <button id="chatSectionButton" onclick="switchOfficeSection('chat')">⌁ Chat room</button>
+  </nav>
+
+  <div class="app-section" id="plainChatSection" hidden>
+    <section class="chat-card" aria-labelledby="generalChatTitle">
+      <div class="chat-card-head">
+        <div>
+          <div class="chat-card-title" id="generalChatTitle">⌁ Plain chat</div>
+          <div class="chat-card-subtitle">Ask anything and receive a direct answer. This does not create office tasks or change repositories.</div>
+        </div>
+      </div>
+      <div class="chat-thread" id="generalChatThread"></div>
+      <div class="chat-compose">
+        <select id="generalChatAgent" aria-label="Chat agent" onchange="officeChat.agent=this.value;renderChatPanels();saveAll()">
+          <option value="codex">Codex</option>
+          <option value="claude">Claude</option>
+        </select>
+        <textarea id="generalChatInput" rows="2" placeholder="Ask anything…" onkeydown="handleChatKey(event,sendGeneralChat)"></textarea>
+        <button id="generalChatSend" onclick="sendGeneralChat()">→ Send</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="app-section" id="officeSection">
+
+  <div class="reception-card" id="receptionCard">
+    <div class="reception-left profile-link" onclick="openProfileLog('reception')" title="View reception activity log">
+      <div class="bell"></div>
+      <div class="reception-info">
+        <div class="eyebrow">reception — pam</div>
+        <div class="desc">drop off any task here — say which floor it's for, we'll take it from there</div>
+      </div>
+    </div>
+    <button onclick="openReceptionModal()">＋ New task</button>
+  </div>
+
+  <div class="floor-tabs" id="floorTabs"></div>
+
+  <div class="floor-content-row">
+    <div class="floor-left-col">
+      <div class="manager-card combined-role-card" id="managerCard"></div>
+
+      <section class="chat-card lead-chat" id="leadQuestionSection" aria-labelledby="leadQuestionTitle">
+        <div class="chat-card-head">
+          <div>
+            <div class="chat-card-title" id="leadQuestionTitle">⌁ Ask the tech lead</div>
+            <div class="chat-card-subtitle" id="leadQuestionSubtitle">Ask about the onboarded codebase, architecture, conventions, or risks.</div>
+          </div>
+        </div>
+        <div class="chat-thread" id="leadQuestionThread"></div>
+        <div class="chat-compose">
+          <textarea id="leadQuestionInput" rows="2" placeholder="Ask a question about this codebase…" onkeydown="handleChatKey(event,sendLeadQuestion)"></textarea>
+          <button id="leadQuestionSend" onclick="sendLeadQuestion()">→ Ask</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="floor-right-col">
+      <div class="counts" id="counts"></div>
+
+      <div class="floor-decor">
+        <div class="pane" style="left:14%;"></div>
+        <div class="pane" style="left:36%;"></div>
+        <div class="pane" style="left:58%;"></div>
+        <div class="pane" style="left:80%;"></div>
+      </div>
+      <div class="floor" id="floor">
+        <div class="plant tl"><div class="pot"></div><div class="leaf l1"></div><div class="leaf l2"></div><div class="leaf l3"></div></div>
+        <div class="plant br"><div class="pot"></div><div class="leaf l1"></div><div class="leaf l2"></div><div class="leaf l3"></div></div>
+      </div>
+    </div>
+  </div>
+  </div>
+</div>
+
+<div class="ticker-wrap">
+  <div class="ticker-label">memo board</div>
+  <div class="ticker-track" id="ticker"></div>
+</div>
+
+<div class="modal-backdrop" id="profileLogBackdrop">
+  <div class="modal" style="width:min(820px,94vw);">
+    <h2 id="profileLogTitle">Activity log</h2>
+    <p class="hint" id="profileLogHint">Live output from the local Claude or Codex process.</p>
+    <div class="log-toolbar">
+      <button onclick="refreshProfileLog()">↻ Refresh</button>
+      <button id="logFormatButton" onclick="toggleLogFormat()">{ } Raw JSON</button>
+      <button onclick="stopProfileAgent()">■ Stop agent</button>
+      <span class="log-status" id="profileLogStatus">Idle</span>
+    </div>
+    <pre class="log-output" id="profileLogOutput">Waiting for agent activity…</pre>
+    <div class="modal-actions" style="margin-top:12px;">
+      <button onclick="closeProfileLog()">× Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="reviewModalBackdrop">
+  <div class="modal" style="width:min(720px,94vw);">
+    <h2>Manager &amp; tech lead review</h2>
+    <p class="hint" id="reviewHint">Combined worker change review.</p>
+    <div class="review-summary" id="reviewSummary"></div>
+    <div class="review-issues" id="reviewIssues" hidden></div>
+    <div id="reviewPublishFields">
+      <label for="reviewBranch">Branch</label>
+      <input id="reviewBranch" type="text" maxlength="180">
+      <label for="reviewPrTitle">Commit and pull-request title</label>
+      <input id="reviewPrTitle" type="text" maxlength="240">
+      <label for="reviewPrBody">Pull-request description</label>
+      <textarea id="reviewPrBody"></textarea>
+      <div class="publish-warning">Nothing is published automatically. Continuing will create or switch to this branch, stage all repository changes, commit them, push to origin, and create a GitHub pull request.</div>
+    </div>
+    <div class="publish-status" id="reviewPublishStatus"></div>
+    <div class="modal-actions">
+      <button onclick="closeReviewModal()">◷ Later</button>
+      <button class="primary" id="publishReviewButton" onclick="publishReviewedChanges()">↑ Push branch &amp; create PR</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="floorModalBackdrop">
+  <div class="modal">
+    <h2 id="floorModalTitle">New floor</h2>
+    <p class="hint">Choose the coding agent and tell it where the repository lives.</p>
+    <label for="floorName">Repository / floor name</label>
+    <input id="floorName" type="text" placeholder="e.g. smallcase-infra" maxlength="60">
+    <label for="floorAgent">Coding agent</label>
+    <select id="floorAgent">
+      <option value="" selected disabled>Choose Claude or Codex…</option>
+      <option value="codex">Codex</option>
+      <option value="claude">Claude</option>
+    </select>
+    <label for="techLeadName">Manager &amp; tech lead name</label>
+    <input id="techLeadName" type="text" placeholder="e.g. Priya" maxlength="60">
+    <label for="repoMode">Repository setup</label>
+    <select id="repoMode" onchange="updateRepoFields()">
+      <option value="local">Use an existing local repository</option>
+      <option value="clone">Clone a repository into a directory</option>
+    </select>
+    <div class="field-group conditional-field" id="localRepoFields">
+      <label for="localRepoPath">Existing repository folder</label>
+      <div class="path-picker">
+        <input id="localRepoPath" type="text" placeholder="Choose the repository folder">
+        <button type="button" onclick="selectRepositoryFolder()" title="Browse repository folders">📁 Select</button>
+      </div>
+    </div>
+    <div class="field-group conditional-field" id="cloneRepoFields" hidden>
+      <label for="cloneRepoUrl">Git repository URL</label>
+      <input id="cloneRepoUrl" type="text" placeholder="e.g. git@github.com:org/project.git" oninput="updateCloneDestination()">
+      <label for="cloneDirectory">Clone destination</label>
+      <div class="path-picker">
+        <input id="cloneDirectory" type="text" placeholder="Choose a parent folder">
+        <button type="button" onclick="selectCloneParentFolder()" title="Browse destination folders">📁 Select</button>
+      </div>
+      <div class="field-note">Select the parent folder; the repository name is added automatically.</div>
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeFloorModal()">× Cancel</button>
+      <button class="primary" id="floorSubmitButton" onclick="submitFloorModal()">▣ Build floor</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="folderBrowserBackdrop">
+  <div class="modal" style="width:min(620px,94vw);">
+    <h2 id="folderBrowserTitle">Select folder</h2>
+    <p class="hint">Browse folders on this computer through the local service.</p>
+    <label for="folderBrowserPath">Current folder</label>
+    <div class="path-picker">
+      <input id="folderBrowserPath" type="text" onkeydown="if(event.key==='Enter'){event.preventDefault();goToFolderBrowserPath();}">
+      <button class="icon-button" type="button" onclick="goToFolderBrowserPath()" title="Open typed path" aria-label="Open typed path">→</button>
+      <button class="icon-button" type="button" id="folderBrowserUp" onclick="browseFolderParent()" title="Go to parent folder" aria-label="Go to parent folder">↑</button>
+    </div>
+    <div class="folder-browser-list" id="folderBrowserList"></div>
+    <div class="folder-browser-status" id="folderBrowserStatus"></div>
+    <div class="modal-actions">
+      <button onclick="closeFolderBrowser()">× Cancel</button>
+      <button class="primary" id="folderBrowserSelect" onclick="chooseCurrentFolder()">✓ Select this folder</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="receptionModalBackdrop">
+  <div class="modal">
+    <h2>Drop off a task</h2>
+    <p class="hint">Pick the floor it belongs to. We'll route it to whoever's free there, same as always.</p>
+    <label for="receptionFloor">Floor</label>
+    <select id="receptionFloor"></select>
+    <label for="receptionTaskName">Task</label>
+    <input id="receptionTaskName" type="text" placeholder="e.g. Fix MongoDB pool exhaustion" maxlength="80">
+    <label for="receptionTaskNote">Note (optional)</label>
+    <textarea id="receptionTaskNote" placeholder="context, ticket link, whatever's useful"></textarea>
+    <div class="modal-actions">
+      <button onclick="closeReceptionModal()">× Cancel</button>
+      <button onclick="receptionNewFloor()">＋ New floor</button>
+      <button class="primary" onclick="submitReceptionModal()">→ Send</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="assignModalBackdrop">
+  <div class="modal">
+    <h2>Assign work</h2>
+    <p class="hint" id="assignHint">The manager will analyze the work and route it to available employees.</p>
+    <label for="taskName">Task</label>
+    <input id="taskName" type="text" placeholder="e.g. Debug KMS throttling" maxlength="80">
+    <label for="taskNote">Note (optional)</label>
+    <textarea id="taskNote" placeholder="context, ticket link, whatever's useful"></textarea>
+    <div class="modal-actions">
+      <button onclick="closeAssignModal()">× Cancel</button>
+      <button class="primary" onclick="submitAssignModal()">→ Send</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="editModalBackdrop">
+  <div class="modal">
+    <h2 id="editModalTitle">Employee</h2>
+    <p class="hint">Current task status, and what's queued up behind it.</p>
+    <label for="editStatus">Current task status</label>
+    <select id="editStatus">
+      <option value="idle">Available</option>
+      <option value="working">Working</option>
+      <option value="blocked">Blocked</option>
+    </select>
+    <label for="editNote">Note on current task</label>
+    <textarea id="editNote"></textarea>
+    <div id="queueListWrap">
+      <label>Queued behind this</label>
+      <div class="queue-list" id="queueList"></div>
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeEditModal()">× Cancel</button>
+      <button id="retryWorkerButton" onclick="retryWorkerAgent()">↻ Retry agent</button>
+      <button id="markDoneButton" onclick="markTaskDone()">✓ Mark done</button>
+      <button class="primary" onclick="submitEditModal()">✓ Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Use the host's persistent storage when supplied (for example, an artifact host).
+// Otherwise use browser localStorage, with an in-memory fallback for restricted previews.
+const hostStorage = window.storage && typeof window.storage.get === 'function' && typeof window.storage.set === 'function'
+  ? window.storage
+  : null;
+const memoryStorage = new Map();
+let storageMode = hostStorage ? 'host storage' : 'browser storage';
+const officeStorage = {
+  async get(key){
+    if(hostStorage) return hostStorage.get(key, false);
+    try{
+      const value = window.localStorage.getItem('office:'+key);
+      return value===null ? null : { key, value, shared:false };
+    }catch(e){
+      storageMode = 'session only';
+      return memoryStorage.has(key) ? { key, value:memoryStorage.get(key), shared:false } : null;
+    }
+  },
+  async set(key, value){
+    if(hostStorage) return hostStorage.set(key, value, false);
+    try{
+      window.localStorage.setItem('office:'+key, value);
+      return { key, value, shared:false };
+    }catch(e){
+      storageMode = 'session only';
+      memoryStorage.set(key, value);
+      return { key, value, shared:false };
+    }
+  }
+};
+
+const STORAGE_KEY = 'task-office-data-v2';
+const LEGACY_KEY_V1 = 'task-office-data';
+const MAX_WORKERS = 5;
+// Pam owns reception; the user-named manager and tech lead owns each floor's shared agent session.
+// The regular desk pool contains independently named workers.
+const NAME_POOL = ['Jim','Dwight','Andy','Kevin','Angela','Oscar','Stanley','Phyllis','Creed','Meredith','Ryan','Kelly','Toby','Holly','Erin','Gabe','Darryl','Nellie'];
+const SKIN_TONES = ['#e8b98b','#c99a72','#8d5a3c','#f0cba0','#a9714b'];
+
+let floors = [];
+let workers = [];
+let currentFloorId = null;
+let editingId = null;
+let tickerLog = [];
+let activeLogProfile = null;
+let profileLogTimer = null;
+let reviewingFloorId = null;
+let officeChat = { agent:'codex', section:'office', sessionIds:{}, messages:[] };
+const pendingLeadPlans = new Map();
+const pendingLeadReviews = new Map();
+const reviewRepositoryStates = new Map();
+const dispatchingFloors = new Set();
+
+function uid(p){ return p+'_'+Date.now()+'_'+Math.floor(Math.random()*1000); }
+function escapeHtml(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function renderMarkdown(text){
+  const raw = String(text||'');
+  // 1. Extract fenced code blocks, replace with placeholders
+  const codeBlocks = [];
+  const withoutCode = raw.replace(/```([^\n]*)\n([\s\S]*?)```/g, (_, lang, code)=>{
+    const idx = codeBlocks.length;
+    const escaped = escapeHtml(code.replace(/\n$/,''));
+    codeBlocks.push(`<pre><code>${escaped}</code></pre>`);
+    return `\x00CODE${idx}\x00`;
+  });
+
+  // 2. Process line by line for block elements
+  const lines = withoutCode.split('\n');
+  const out = [];
+  let i = 0;
+  while(i < lines.length){
+    const line = lines[i];
+    // Code block placeholder
+    if(/^\x00CODE\d+\x00$/.test(line.trim())){
+      const idx = parseInt(line.trim().replace(/\x00CODE(\d+)\x00/,'$1'));
+      out.push(codeBlocks[idx]);
+      i++; continue;
+    }
+    // Headings
+    if(/^### /.test(line)){ out.push(`<h3>${inlineMarkdown(line.slice(4))}</h3>`); i++; continue; }
+    if(/^## /.test(line)){ out.push(`<h2>${inlineMarkdown(line.slice(3))}</h2>`); i++; continue; }
+    if(/^# /.test(line)){ out.push(`<h1>${inlineMarkdown(line.slice(2))}</h1>`); i++; continue; }
+    // Horizontal rule
+    if(/^---+$/.test(line.trim())){ out.push('<hr>'); i++; continue; }
+    // Blockquote — collect consecutive
+    if(/^> /.test(line)){
+      const bqLines = [];
+      while(i < lines.length && /^> /.test(lines[i])){
+        bqLines.push(inlineMarkdown(lines[i].slice(2)));
+        i++;
+      }
+      out.push(`<blockquote>${bqLines.join('<br>')}</blockquote>`);
+      continue;
+    }
+    // Unordered list — collect consecutive
+    if(/^[-*] /.test(line)){
+      const items = [];
+      while(i < lines.length && /^[-*] /.test(lines[i])){
+        items.push(`<li>${inlineMarkdown(lines[i].slice(2))}</li>`);
+        i++;
+      }
+      out.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+    // Ordered list — collect consecutive
+    if(/^\d+\. /.test(line)){
+      const items = [];
+      while(i < lines.length && /^\d+\. /.test(lines[i])){
+        items.push(`<li>${inlineMarkdown(lines[i].replace(/^\d+\. /,''))}</li>`);
+        i++;
+      }
+      out.push(`<ol>${items.join('')}</ol>`);
+      continue;
+    }
+    // Blank line — paragraph separator (skip)
+    if(line.trim()===''){
+      i++; continue;
+    }
+    // Paragraph — collect consecutive non-blank, non-block lines
+    const pLines = [];
+    while(i < lines.length){
+      const l = lines[i];
+      if(l.trim()==='' || /^#{1,3} /.test(l) || /^---+$/.test(l.trim()) ||
+         /^> /.test(l) || /^[-*] /.test(l) || /^\d+\. /.test(l) ||
+         /^\x00CODE\d+\x00$/.test(l.trim())){ break; }
+      pLines.push(inlineMarkdown(l));
+      i++;
+    }
+    if(pLines.length) out.push(`<p>${pLines.join('<br>')}</p>`);
+  }
+  return out.join('');
+}
+function inlineMarkdown(s){
+  // Escape HTML first
+  let r = escapeHtml(s);
+  // Inline code (use placeholder to avoid double-processing)
+  const codeParts = [];
+  r = r.replace(/`([^`]+)`/g, (_,c)=>{ const idx=codeParts.length; codeParts.push(`<code>${c}</code>`); return `\x01C${idx}\x01`; });
+  // Bold
+  r = r.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+  // Italic *text* or _text_
+  r = r.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+  r = r.replace(/_([^_]+)_/g,'<em>$1</em>');
+  // Restore inline code
+  r = r.replace(/\x01C(\d+)\x01/g,(_,i)=>codeParts[parseInt(i)]);
+  return r;
+}
+function timeAgo(ts){
+  const s = Math.floor((Date.now()-ts)/1000);
+  if(s<60) return 'just now';
+  const m = Math.floor(s/60);
+  if(m<60) return m+'m ago';
+  const h = Math.floor(m/60);
+  if(h<24) return h+'h ago';
+  return Math.floor(h/24)+'d ago';
+}
+
+async function loadAll(){
+  try{
+    const res = await officeStorage.get(STORAGE_KEY);
+    if(res && res.value){
+      const data = JSON.parse(res.value);
+      floors = data.floors || [];
+      workers = data.workers || [];
+      officeChat = data.officeChat || officeChat;
+      currentFloorId = data.currentFloorId || (floors[0] && floors[0].id) || null;
+    } else {
+      await migrateFromV1();
+    }
+  }catch(e){
+    floors = [{ id: uid('f'), name:'general', createdAt: Date.now() }];
+    workers = [];
+    currentFloorId = floors[0].id;
+  }
+  if(floors.length===0){
+    const f = { id: uid('f'), name:'general', createdAt: Date.now() };
+    floors = [f]; currentFloorId = f.id;
+  }
+  let staffAdded = false;
+  for(const floor of floors) staffAdded = ensureFloorStaff(floor.id) || staffAdded;
+  if(staffAdded) await saveAll();
+  render();
+}
+
+async function migrateFromV1(){
+  let legacyFloors = [], legacyWorkers = [];
+  try{
+    const legacy = await officeStorage.get(LEGACY_KEY_V1);
+    if(legacy && legacy.value){
+      const d = JSON.parse(legacy.value);
+      legacyFloors = d.floors || [];
+      legacyWorkers = d.workers || [];
+    }
+  }catch(e){ /* nothing to migrate */ }
+
+  if(legacyFloors.length===0){
+    floors = [{ id: uid('f'), name:'general', createdAt: Date.now() }];
+    workers = [];
+    currentFloorId = floors[0].id;
+    return;
+  }
+  floors = legacyFloors;
+  workers = [];
+  currentFloorId = legacyFloors[0].id;
+
+  legacyFloors.forEach(f=>{
+    const oldOnFloor = legacyWorkers.filter(w=>w.floorId===f.id && w.status!=='done');
+    const slots = oldOnFloor.slice(0, MAX_WORKERS);
+    const overflow = oldOnFloor.slice(MAX_WORKERS);
+    const newWorkers = slots.map((w,i)=> makeWorker(f.id, i, [{ id: uid('t'), title: w.name, note: w.note||'' }], w.status==='blocked'?'blocked':'working'));
+    overflow.forEach((w,i)=>{
+      const target = newWorkers[i % newWorkers.length];
+      if(target) target.tasks.push({ id: uid('t'), title: w.name, note: w.note||'' });
+    });
+    workers.push(...newWorkers);
+  });
+  await saveAll();
+}
+
+async function saveAll(){
+  try{
+    await officeStorage.set(STORAGE_KEY, JSON.stringify({ schemaVersion:4, floors, workers, officeChat, currentFloorId }));
+  }catch(e){
+    console.error('save failed', e);
+  }
+}
+
+function log(msg){
+  tickerLog.unshift('['+new Date().toLocaleTimeString()+'] '+msg);
+  tickerLog = tickerLog.slice(0,30);
+  renderTicker();
+}
+function renderTicker(){
+  const el = document.getElementById('ticker');
+  if(tickerLog.length===0){ el.innerHTML = '<span>floor is quiet — assign work to get started</span>'; return; }
+  el.innerHTML = tickerLog.map(t=>'<span>'+escapeHtml(t)+'</span>').join('');
+}
+
+function handleChatKey(event, sender){
+  if(event.key==='Enter' && !event.shiftKey){
+    event.preventDefault();
+    sender();
+  }
+}
+
+function renderOfficeSection(){
+  const section = officeChat.section==='chat' ? 'chat' : 'office';
+  document.getElementById('officeSection').hidden = section!=='office';
+  document.getElementById('plainChatSection').hidden = section!=='chat';
+  document.getElementById('officeSectionButton').classList.toggle('active', section==='office');
+  document.getElementById('chatSectionButton').classList.toggle('active', section==='chat');
+}
+
+async function switchOfficeSection(section){
+  officeChat.section = section==='chat' ? 'chat' : 'office';
+  renderOfficeSection();
+  await saveAll();
+  if(officeChat.section==='chat') setTimeout(()=>document.getElementById('generalChatInput').focus(),30);
+}
+
+function chatMessagesHtml(messages, emptyText){
+  if(!messages.length) return `<div class="chat-empty">${escapeHtml(emptyText)}</div>`;
+  return messages.map(message=>{
+    const label = message.role==='user' ? 'You' : (message.label || message.agent || 'Assistant');
+    const text = message.status==='working' ? 'Thinking…' : message.text;
+    const bodyHtml = message.role==='user'
+      ? escapeHtml(text || '')
+      : (message.status==='working' ? '<em>Thinking…</em>' : renderMarkdown(text || ''));
+    return `<div class="chat-message ${message.role==='user' ? 'user' : 'assistant'} ${message.status==='error' ? 'error' : ''}">
+      <span class="chat-message-meta">${escapeHtml(label)}</span>${bodyHtml}
+    </div>`;
+  }).join('');
+}
+
+function renderChatPanels(){
+  const generalThread = document.getElementById('generalChatThread');
+  if(generalThread){
+    officeChat.messages = Array.isArray(officeChat.messages) ? officeChat.messages : [];
+    officeChat.sessionIds = officeChat.sessionIds || {};
+    generalThread.innerHTML = chatMessagesHtml(officeChat.messages, 'No messages yet. Choose Claude or Codex and ask anything.');
+    document.getElementById('generalChatAgent').value = ['claude','codex'].includes(officeChat.agent) ? officeChat.agent : 'codex';
+    document.getElementById('generalChatSend').disabled = officeChat.messages.some(message=>['starting','working'].includes(message.status) && message.agent===officeChat.agent);
+    generalThread.scrollTop = generalThread.scrollHeight;
+  }
+  const floor = floors.find(item=>item.id===currentFloorId);
+  const leadSection = document.getElementById('leadQuestionSection');
+  if(!floor || !leadSection) return;
+  floor.questions = Array.isArray(floor.questions) ? floor.questions : [];
+  document.getElementById('leadQuestionTitle').textContent = `⌁ Ask ${floor.techLeadName || 'the tech lead'}`;
+  document.getElementById('leadQuestionSubtitle').textContent = floor.onboardingStatus==='ready'
+    ? `Questions are answered from the persistent ${floor.agent} session that onboarded this codebase.`
+    : 'Codebase questions become available after onboarding finishes.';
+  const leadThread = document.getElementById('leadQuestionThread');
+  leadThread.innerHTML = chatMessagesHtml(floor.questions, 'No codebase questions yet.');
+  const busy = floor.questions.some(message=>['starting','working'].includes(message.status))
+    || pendingLeadPlans.has(`lead:${floor.id}`) || pendingLeadReviews.has(`lead:${floor.id}`);
+  document.getElementById('leadQuestionInput').disabled = floor.onboardingStatus!=='ready' || busy;
+  document.getElementById('leadQuestionSend').disabled = floor.onboardingStatus!=='ready' || busy;
+  leadThread.scrollTop = leadThread.scrollHeight;
+}
+
+function plainChatPrompt(message){
+  return [
+    'Act as a plain conversational assistant. Answer the user directly in clear human-readable text.',
+    'This is not an office task. Do not create tasks, edit files, run commands, spawn workers, or take external actions. You may provide explanations, suggestions, and code in the answer.',
+    `User message:\n${message}`
+  ].join('\n\n');
+}
+
+async function sendGeneralChat(){
+  const input = document.getElementById('generalChatInput');
+  const textValue = input.value.trim();
+  const agent = document.getElementById('generalChatAgent').value;
+  if(!textValue || !['claude','codex'].includes(agent)) return;
+  if(officeChat.messages.some(message=>['starting','working'].includes(message.status) && message.agent===agent)) return;
+  officeChat.agent = agent;
+  const answerId = uid('chat');
+  officeChat.messages = [...officeChat.messages,
+    { id:uid('chat'), role:'user', text:textValue, agent, time:Date.now() },
+    { id:answerId, role:'assistant', text:'', label:agent, agent, status:'starting', time:Date.now() }
+  ].slice(-100);
+  input.value = '';
+  renderChatPanels();
+  await saveAll();
+  try{
+    const profileId = `chat:general:${agent}`;
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId, runType:'chat', agent,
+        task:textValue.slice(0,120), prompt:plainChatPrompt(textValue),
+        repository:{ mode:'office' }, sessionId:officeChat.sessionIds[agent] || undefined
+      })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Chat returned ${response.status}`);
+    const answer = officeChat.messages.find(message=>message.id===answerId);
+    if(answer){
+      answer.status = 'working';
+      answer.profileId = profileId;
+      answer.startedAt = data.startedAt;
+    }
+    if(data.sessionId) officeChat.sessionIds[agent] = data.sessionId;
+  }catch(e){
+    const answer = officeChat.messages.find(message=>message.id===answerId);
+    if(answer){ answer.status='error'; answer.text=String(e.message || e); }
+  }
+  await saveAll();
+  renderChatPanels();
+}
+
+function techLeadQuestionPrompt(floor, question){
+  return [
+    `Continue as ${floor.techLeadName}, the persistent tech lead for this repository.`,
+    'Answer this codebase question directly using your onboarding knowledge, prior session context, and read-only repository inspection when useful.',
+    'Do not modify files, create tasks, spawn workers, commit, push, or take external actions. If the repository does not establish the answer, say what is uncertain.',
+    techLeadSharedContext(floor),
+    `User question:\n${question}`
+  ].join('\n\n');
+}
+
+async function sendLeadQuestion(){
+  const floor = floors.find(item=>item.id===currentFloorId);
+  const input = document.getElementById('leadQuestionInput');
+  const question = input.value.trim();
+  if(!floor || !question) return;
+  if(floor.onboardingStatus!=='ready'){
+    window.alert('Let the tech lead finish codebase onboarding first.');
+    return;
+  }
+  if((floor.questions || []).some(message=>message.status==='working')
+    || pendingLeadPlans.has(`lead:${floor.id}`) || pendingLeadReviews.has(`lead:${floor.id}`)){
+    window.alert('The tech lead is busy. Ask again after the current turn finishes.');
+    return;
+  }
+  const answerId = uid('question');
+  floor.questions = [...(floor.questions || []),
+    { id:uid('question'), role:'user', text:question, time:Date.now() },
+    { id:answerId, role:'assistant', text:'', label:floor.techLeadName, agent:floor.agent, status:'starting', time:Date.now() }
+  ].slice(-100);
+  input.value = '';
+  renderChatPanels();
+  await saveAll();
+  try{
+    const profileId = `lead:${floor.id}`;
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId, runType:'question', agent:floor.agent,
+        task:question.slice(0,120), prompt:techLeadQuestionPrompt(floor, question),
+        repository:floorRepository(floor), sessionId:floor.techLeadSessionId || undefined
+      })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Question returned ${response.status}`);
+    const answer = floor.questions.find(message=>message.id===answerId);
+    if(answer){
+      answer.status = 'working';
+      answer.profileId = profileId;
+      answer.startedAt = data.startedAt;
+    }
+    if(data.sessionId) floor.techLeadSessionId = data.sessionId;
+  }catch(e){
+    const answer = floor.questions.find(message=>message.id===answerId);
+    if(answer){ answer.status='error'; answer.text=String(e.message || e); }
+  }
+  await saveAll();
+  renderChatPanels();
+}
+
+let chatSyncBusy = false;
+async function syncChatRuns(){
+  if(chatSyncBusy || location.protocol==='file:') return;
+  chatSyncBusy = true;
+  try{
+    const pending = [];
+    for(const message of officeChat.messages || []){
+      if(message.status==='working' && message.profileId) pending.push({ message, kind:'general', agent:message.agent });
+    }
+    for(const floor of floors){
+      for(const message of floor.questions || []){
+        if(message.status==='working' && message.profileId) pending.push({ message, kind:'floor', floor });
+      }
+    }
+    let changed = false;
+    await Promise.all(pending.map(async item=>{
+      try{
+        const response = await fetch(`/api/logs?profileId=${encodeURIComponent(item.message.profileId)}&since=999999999`, { cache:'no-store' });
+        if(!response.ok) return;
+        const data = await response.json();
+        if(data.startedAt!==item.message.startedAt) return;
+        if(item.kind==='general' && data.sessionId && officeChat.sessionIds[item.agent]!==data.sessionId){
+          officeChat.sessionIds[item.agent] = data.sessionId;
+          changed = true;
+        }else if(item.kind==='floor' && data.sessionId && item.floor.techLeadSessionId!==data.sessionId){
+          item.floor.techLeadSessionId = data.sessionId;
+          changed = true;
+        }
+        if(data.status==='completed'){
+          item.message.status = 'completed';
+          item.message.text = data.finalMessage || 'The agent completed without returning a written answer.';
+          changed = true;
+        }else if(data.status==='failed'){
+          item.message.status = 'error';
+          item.message.text = data.errorMessage || 'The agent could not answer. Open its activity log for details.';
+          changed = true;
+        }
+      }catch(e){ /* service health indicator reports connectivity */ }
+    }));
+    if(changed){ await saveAll(); renderChatPanels(); }
+  }finally{
+    chatSyncBusy = false;
+  }
+}
+
+function logProfile(kind, id){
+  if(kind==='worker'){
+    const worker = workers.find(w=>w.id===id);
+    const floor = worker && floors.find(f=>f.id===worker.floorId);
+    return worker && {
+      key:worker.sharedLeadSession ? `lead:${worker.floorId}` : `worker:${worker.id}`,
+      kind, workerId:worker.id, floorId:worker.floorId,
+      title:`${worker.name} — ${worker.sharedLeadSession ? 'tech-lead subagent' : 'worker'}`,
+      agent:(floor && floor.agent)||'', shared:!!worker.sharedLeadSession
+    };
+  }
+  const floor = floors.find(f=>f.id===(id || currentFloorId)) || {};
+  if(kind==='manager' || kind==='lead') return {
+    key:`lead:${floor.id}`, kind:'lead',
+    title:`${floor.techLeadName || 'Unassigned'} — manager & tech lead`,
+    agent:floor.agent||''
+  };
+  return { key:'reception', kind, title:'Pam — reception', agent:floor.agent||'' };
+}
+
+function clipLogText(value, limit){
+  const serialized = typeof value==='string' ? value : JSON.stringify(value, null, 2);
+  const text = serialized==null ? '' : serialized;
+  const max = limit || 3000;
+  return text.length>max ? text.slice(0,max)+'\n… output truncated …' : text;
+}
+
+function messageText(content){
+  if(typeof content==='string') return content;
+  if(!Array.isArray(content)) return '';
+  return content.filter(block=>block && block.type==='text').map(block=>block.text||'').join('\n');
+}
+
+function toolLabel(name, input){
+  input = input || {};
+  if(name==='Agent' || name==='Task') return `Delegate worker: ${input.description || input.name || input.subagent_type || ''}${input.prompt ? '\n'+clipLogText(input.prompt,1800) : ''}`;
+  if(name==='Bash') return `Run: ${input.command || ''}`;
+  if(name==='Read') return `Read: ${input.file_path || input.path || ''}`;
+  if(name==='Edit') return `Edit: ${input.file_path || input.path || ''}`;
+  if(name==='Write') return `Write: ${input.file_path || input.path || ''}`;
+  if(name==='Glob') return `Find files: ${input.pattern || ''}`;
+  if(name==='Grep') return `Search: ${input.pattern || ''}`;
+  return `Tool: ${name}${Object.keys(input).length ? '\n'+clipLogText(input,1200) : ''}`;
+}
+
+function cleanAgentEvent(raw, agent){
+  let event;
+  try{ event = JSON.parse(raw); }catch(e){ return [clipLogText(raw)]; }
+  const lines = [];
+  if(agent==='codex'){
+    const type = event.type || '';
+    const item = event.item || {};
+    if(type==='thread.started') lines.push('Session started');
+    else if(type==='turn.started') lines.push('Working…');
+    else if(type==='turn.failed' || type==='error') lines.push(`Error: ${event.message || (event.error && event.error.message) || 'agent run failed'}`);
+    else if(type==='turn.completed') lines.push('Turn completed');
+    else if(type==='item.started'){
+      if(item.type==='command_execution') lines.push(`Run: ${item.command || ''}`);
+      else if(item.type==='mcp_tool_call') lines.push(`Tool: ${item.server || ''}.${item.tool || item.name || ''}`);
+      else if(item.type==='web_search') lines.push(`Search web: ${item.query || ''}`);
+    }else if(type==='item.completed'){
+      if(item.type==='reasoning') lines.push(`Thinking: ${clipLogText(item.text || item.summary || '',1800)}`);
+      else if(item.type==='agent_message') lines.push(`Agent: ${clipLogText(item.text || messageText(item.content) || '',4000)}`);
+      else if(item.type==='command_execution'){
+        const output = item.aggregated_output || item.output || '';
+        lines.push(`Command ${item.exit_code===0 ? 'finished' : 'failed'}${item.exit_code!==undefined ? ` (exit ${item.exit_code})` : ''}${output ? '\n'+clipLogText(output,3000) : ''}`);
+      }else if(item.type==='file_change'){
+        const changes = Array.isArray(item.changes) ? item.changes : [];
+        lines.push(...changes.map(change=>`${change.kind || 'Changed'}: ${change.path || ''}`));
+      }else if(item.type==='mcp_tool_call'){
+        lines.push(`Tool finished: ${item.server || ''}.${item.tool || item.name || ''}${item.error ? '\nError: '+clipLogText(item.error,1200) : ''}`);
+      }
+    }
+    if(!lines.length && item.type){
+      const label = String(item.type).replace(/_/g,' ');
+      lines.push(`${type==='item.completed' ? 'Finished' : 'Agent activity'}: ${label}${item.name ? ' · '+item.name : ''}`);
+    }
+    return lines.filter(line=>line && !line.endsWith(': '));
+  }
+
+  if(agent==='claude'){
+    if(event.type==='system' && event.subtype==='init') lines.push(`Session started${event.model ? ' · '+event.model : ''}`);
+    else if(event.type==='assistant'){
+      const content = event.message && event.message.content;
+      for(const block of Array.isArray(content) ? content : []){
+        if(block.type==='thinking') lines.push(`Thinking: ${clipLogText(block.thinking || block.text || '',1800)}`);
+        else if(block.type==='text') lines.push(`Agent: ${clipLogText(block.text || '',4000)}`);
+        else if(block.type==='tool_use') lines.push(toolLabel(block.name || 'unknown', block.input));
+      }
+    }else if(event.type==='user'){
+      const content = event.message && event.message.content;
+      for(const block of Array.isArray(content) ? content : []){
+        if(block.type==='tool_result'){
+          const output = messageText(block.content) || block.content || '';
+          if(output) lines.push(`Output:\n${clipLogText(output,3000)}`);
+        }
+      }
+    }else if(event.type==='result'){
+      if(event.is_error) lines.push(`Error: ${clipLogText(event.result || event.error || 'agent run failed',3000)}`);
+      else lines.push(`Completed${event.result ? ': '+clipLogText(event.result,4000) : ''}`);
+    }
+    return lines;
+  }
+  return [clipLogText(raw)];
+}
+
+function renderProfileLogEntries(){
+  if(!activeLogProfile) return;
+  const output = document.getElementById('profileLogOutput');
+  const rendered = [];
+  for(const entry of activeLogProfile.entries){
+    const stamp = new Date(entry.time).toLocaleTimeString();
+    if(activeLogProfile.raw){
+      rendered.push(`[${stamp}] ${entry.stream}> ${entry.text}`);
+      continue;
+    }
+    const messages = entry.stream==='agent'
+      ? cleanAgentEvent(entry.text, activeLogProfile.agent)
+      : [entry.stream==='system' ? entry.text : `${entry.stream.toUpperCase()}: ${entry.text}`];
+    for(const message of messages) if(message) rendered.push(`[${stamp}] ${message}`);
+  }
+  output.textContent = rendered.join('\n\n') || (['worker','lead'].includes(activeLogProfile.kind)
+    ? `(This ${activeLogProfile.kind} has not started an agent run yet.)`
+    : '(No coding process runs for this office role.)');
+}
+
+function toggleLogFormat(){
+  if(!activeLogProfile) return;
+  activeLogProfile.raw = !activeLogProfile.raw;
+  document.getElementById('logFormatButton').textContent = activeLogProfile.raw ? '≡ Clean view' : '{ } Raw JSON';
+  renderProfileLogEntries();
+}
+
+function openProfileLog(kind, id){
+  const profile = logProfile(kind, id);
+  if(!profile) return;
+  activeLogProfile = { ...profile, sequence:0, entries:[], raw:false };
+  document.getElementById('logFormatButton').textContent = '{ } Raw JSON';
+  document.getElementById('profileLogTitle').textContent = profile.title+' activity';
+  document.getElementById('profileLogHint').textContent = ['worker','lead'].includes(profile.kind)
+    ? profile.shared
+      ? `This worker runs inside the tech lead's shared ${profile.agent || 'agent'} session.`
+      : `Live stdout from this ${profile.kind}'s ${profile.agent || 'agent'} CLI process.`
+    : 'This office role routes work but does not run a coding process.';
+  document.getElementById('profileLogOutput').textContent = 'Connecting to the local agent service…';
+  document.getElementById('profileLogBackdrop').classList.add('open');
+  refreshProfileLog();
+  clearInterval(profileLogTimer);
+  profileLogTimer = setInterval(refreshProfileLog, 2000);
+}
+
+function closeProfileLog(){
+  clearInterval(profileLogTimer);
+  profileLogTimer = null;
+  activeLogProfile = null;
+  document.getElementById('profileLogBackdrop').classList.remove('open');
+}
+
+async function refreshProfileLog(){
+  if(!activeLogProfile) return;
+  const output = document.getElementById('profileLogOutput');
+  const status = document.getElementById('profileLogStatus');
+  try{
+    const wasAtBottom = output.scrollHeight-output.scrollTop-output.clientHeight < 40;
+    const response = await fetch(`/api/logs?profileId=${encodeURIComponent(activeLogProfile.key)}&since=${activeLogProfile.sequence}`, { cache:'no-store' });
+    if(!response.ok) throw new Error('Agent service returned '+response.status);
+    const data = await response.json();
+    if(activeLogProfile.startedAt && data.startedAt && activeLogProfile.startedAt!==data.startedAt){
+      activeLogProfile.entries = [];
+      activeLogProfile.sequence = 0;
+      activeLogProfile.startedAt = data.startedAt;
+      return refreshProfileLog();
+    }
+    if(data.startedAt) activeLogProfile.startedAt = data.startedAt;
+    activeLogProfile.entries.push(...(data.logs || []));
+    activeLogProfile.entries = activeLogProfile.entries.slice(-1200);
+    if(Number.isFinite(data.sequence)) activeLogProfile.sequence = data.sequence;
+    if(activeLogProfile.kind==='worker'){
+      const workerId = activeLogProfile.workerId || activeLogProfile.key.slice(7);
+      const worker = workers.find(w=>w.id===workerId);
+      if(worker && data.status!=='idle') worker.runtimeStatus = data.status;
+      if(worker && !worker.sharedLeadSession && data.sessionId && worker.sessionId!==data.sessionId){
+        worker.sessionId = data.sessionId;
+        await saveAll();
+      }
+    }else if(activeLogProfile.kind==='lead' && data.sessionId){
+      const floorId = activeLogProfile.key.slice(5);
+      const floor = floors.find(f=>f.id===floorId);
+      if(floor && floor.techLeadSessionId!==data.sessionId){
+        floor.techLeadSessionId = data.sessionId;
+        await saveAll();
+      }
+    }
+    renderProfileLogEntries();
+    status.textContent = `${data.status || 'idle'}${data.pid ? ' · pid '+data.pid : ''} · ${new Date().toLocaleTimeString()}`;
+    if(wasAtBottom) output.scrollTop = output.scrollHeight;
+  }catch(e){
+    status.textContent = 'agent service offline';
+    output.textContent = 'Start this page through the local service:\n\npython3 office_server.py\n\nThen open http://127.0.0.1:8765';
+  }
+}
+
+async function stopProfileAgent(){
+  if(!activeLogProfile || !['worker','lead'].includes(activeLogProfile.kind)) return;
+  await fetch('/api/stop', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ profileId:activeLogProfile.key })
+  });
+  await refreshProfileLog();
+}
+
+async function syncWorkerRuntime(){
+  if(location.protocol==='file:' || !workers.length) return;
+  let changed = false;
+  await Promise.all(workers.filter(w=>w.tasks.length).map(async w=>{
+    try{
+      const profileId = w.sharedLeadSession ? `lead:${w.floorId}` : `worker:${w.id}`;
+      const response = await fetch(`/api/logs?profileId=${encodeURIComponent(profileId)}&since=999999999`, { cache:'no-store' });
+      if(!response.ok) return;
+      const data = await response.json();
+      if(w.sharedLeadSession && data.runType!=='orchestrate') return;
+      if(!w.sharedLeadSession && data.sessionId && w.sessionId!==data.sessionId){
+        w.sessionId = data.sessionId;
+        changed = true;
+      }
+      if(data.status!=='idle' && w.runtimeStatus!==data.status){
+        w.runtimeStatus = data.status;
+        if(data.status==='failed') w.status = 'blocked';
+        changed = true;
+      }
+      if(data.status==='completed' && w.tasks[0] && w.tasks[0].initiativeId){
+        const floor = floors.find(f=>f.id===w.floorId);
+        const tracker = floor && (floor.multiInitiatives || []).find(item=>item.id===w.tasks[0].initiativeId);
+        if(tracker) tracker.completedTaskIds = tracker.completedTaskIds || [];
+        if(tracker && !tracker.completedTaskIds.includes(w.tasks[0].id)){
+          tracker.completedTaskIds.push(w.tasks[0].id);
+          changed = true;
+        }
+      }
+      if(!w.sharedLeadSession && data.status==='completed' && w.tasks[0] && !w.tasks[0].contextCaptured){
+        const floor = floors.find(f=>f.id===w.floorId);
+        const task = w.tasks[0];
+        const summary = String(data.finalMessage || 'Completed without a final written summary.').slice(0,6000);
+        task.contextCaptured = true;
+        task.resultSummary = summary;
+        if(floor){
+          floor.leadContext = [...(floor.leadContext || []), {
+            id:uid('context'), time:Date.now(), workerId:w.id, workerName:w.name,
+            taskId:task.id, taskTitle:task.title, initiative:task.initiative || '', summary
+          }].slice(-100);
+        }
+        const finished = w.tasks.shift();
+        w.status = w.tasks.length ? 'working' : 'idle';
+        w.runtimeStatus = w.tasks.length ? 'starting' : 'idle';
+        w.updatedAt = Date.now();
+        log(`${w.name} completed "${finished.title}" and is now ${w.tasks.length ? 'moving to queued work' : 'available'}`);
+        if(w.tasks.length) await startWorkerAgent(w, w.tasks[0]);
+        changed = true;
+      }
+    }catch(e){ /* the header log viewer reports service availability */ }
+  }));
+  if(changed){ await saveAll(); render(); }
+}
+
+async function checkAgentService(){
+  const el = document.getElementById('agentServiceStatus');
+  try{
+    const response = await fetch('/api/health', { cache:'no-store' });
+    if(!response.ok) throw new Error();
+    const data = await response.json();
+    const ready = Object.entries(data.agents).filter(([,ok])=>ok).map(([name])=>name);
+    const missing = Object.entries(data.agents).filter(([,ok])=>!ok).map(([name])=>name);
+    el.className = 'service-status online';
+    el.textContent = `ready: ${ready.join(', ') || 'no agents'}${missing.length ? ' · missing: '+missing.join(', ') : ''}`;
+  }catch(e){
+    el.className = 'service-status offline';
+    el.textContent = 'agent service offline — run office_server.py';
+  }
+}
+
+function usedNames(floorId){
+  const names = workers.filter(w=>w.floorId===floorId).map(w=>w.name);
+  const floor = floors.find(f=>f.id===floorId);
+  if(floor && floor.techLeadName) names.push(floor.techLeadName);
+  return names;
+}
+function pickName(floorId){
+  const used = usedNames(floorId).map(n=>n.toLowerCase());
+  const free = NAME_POOL.filter(n=>!used.includes(n.toLowerCase()));
+  return free.length ? free[Math.floor(Math.random()*free.length)] : 'Temp#'+Math.floor(Math.random()*999);
+}
+function makeWorker(floorId, idx, tasks, status){
+  tasks = Array.isArray(tasks) ? tasks : [];
+  return {
+    id: uid('w'), floorId,
+    name: pickName(floorId),
+    skin: SKIN_TONES[idx % SKIN_TONES.length],
+    status: status || (tasks.length ? 'working' : 'idle'),
+    tasks: tasks,
+    createdAt: Date.now(), updatedAt: Date.now()
+  };
+}
+
+function floorWorkers(floorId){ return workers.filter(w=>w.floorId===floorId); }
+
+function ensureFloorStaff(floorId){
+  let added = false;
+  while(floorWorkers(floorId).length < MAX_WORKERS){
+    const index = floorWorkers(floorId).length;
+    workers.push(makeWorker(floorId, index, [], 'idle'));
+    added = true;
+  }
+  return added;
+}
+
+function removeTrackedTask(floorId, task){
+  if(!task || !task.initiativeId) return;
+  const floor = floors.find(f=>f.id===floorId);
+  const tracker = floor && (floor.multiInitiatives || []).find(item=>item.id===task.initiativeId);
+  if(!tracker) return;
+  tracker.assignments = tracker.assignments.filter(item=>item.taskId!==task.id);
+  tracker.completedTaskIds = tracker.completedTaskIds.filter(id=>id!==task.id);
+}
+
+function releaseTrackerWorkers(floor, tracker){
+  if(!tracker || tracker.releasedAt) return;
+  for(const assignment of tracker.assignments || []){
+    const worker = workers.find(item=>item.id===assignment.workerId);
+    if(!worker) continue;
+    const taskIndex = worker.tasks.findIndex(task=>task.id===assignment.taskId);
+    if(taskIndex!==-1) worker.tasks.splice(taskIndex, 1);
+    worker.status = worker.tasks.length ? 'working' : 'idle';
+    worker.runtimeStatus = worker.tasks.length ? 'delegated' : 'idle';
+    worker.updatedAt = Date.now();
+  }
+  tracker.releasedAt = Date.now();
+  log(`Implementation workers for "${tracker.initiative}" are free; review continues with ${floor.techLeadName}`);
+}
+
+function workerPrompt(task){
+  return [
+    `Work on this task: ${task.title}`,
+    task.initiative ? `Parent initiative: ${task.initiative}` : '',
+    task.note ? `Context:\n${task.note}` : '',
+    'Inspect the repository, implement the task, and run appropriate verification. Do not create a git commit unless the task explicitly requests one.'
+  ].filter(Boolean).join('\n\n');
+}
+
+function techLeadSharedContext(floor){
+  const entries = (floor.leadContext || []).slice(-20);
+  const codebase = floor.codebaseContext;
+  const sections = [];
+  if(codebase){
+    sections.push([
+      'Onboarding knowledge for this repository:',
+      codebase.summary,
+      codebase.architecture ? `Architecture: ${codebase.architecture}` : '',
+      (codebase.conventions || []).length ? `Conventions:\n- ${codebase.conventions.join('\n- ')}` : '',
+      (codebase.test_commands || []).length ? `Known verification commands:\n- ${codebase.test_commands.join('\n- ')}` : '',
+      (codebase.risk_areas || []).length ? `Risk areas:\n- ${codebase.risk_areas.join('\n- ')}` : '',
+      (codebase.key_files || []).length ? `Key files:\n- ${codebase.key_files.join('\n- ')}` : ''
+    ].filter(Boolean).join('\n'));
+  }
+  const workerText = entries.map(entry=>[
+    `[${new Date(entry.time).toLocaleString()}] ${entry.workerName} — ${entry.taskTitle}`,
+    entry.initiative ? `Initiative: ${entry.initiative}` : '',
+    entry.summary
+  ].filter(Boolean).join('\n')).join('\n\n');
+  if(workerText) sections.push(`Completed-work context:\n\n${workerText}`);
+  const questions = floor.questions || [];
+  const answeredQuestions = [];
+  for(let index=1; index<questions.length; index++){
+    const answer = questions[index], question = questions[index-1];
+    if(answer.role==='assistant' && answer.status==='completed' && question.role==='user'){
+      answeredQuestions.push(`Q: ${question.text}\nA: ${answer.text}`);
+    }
+  }
+  if(answeredQuestions.length) sections.push(`Prior codebase Q&A:\n\n${answeredQuestions.slice(-10).join('\n\n')}`);
+  return sections.length
+    ? `Shared floor context:\n\n${sections.join('\n\n').slice(-24000)}`
+    : 'Shared floor context: onboarding has not completed and no worker outcomes are recorded.';
+}
+
+function floorRepository(floor){
+  return floor.repoMode==='clone'
+    ? { mode:'clone', url:floor.cloneUrl, destination:floor.cloneDirectory }
+    : { mode:'local', path:floor.localPath };
+}
+
+async function startWorkerAgent(worker, task){
+  const floor = floors.find(f=>f.id===worker.floorId);
+  if(!floor || !task) return false;
+  try{
+    const response = await fetch('/api/run', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId:`worker:${worker.id}`,
+        agent:floor.agent,
+        task:task.title,
+        prompt:workerPrompt(task),
+        repository:floorRepository(floor),
+        sessionId:worker.sessionId || undefined
+      })
+    });
+    const data = await response.json();
+    if(!response.ok){
+      const error = new Error(data.error || `Agent service returned ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    worker.status = 'working';
+    worker.runtimeStatus = data.status;
+    const tracker = task.initiativeId && (floor.multiInitiatives || []).find(item=>item.id===task.initiativeId);
+    if(tracker){
+      tracker.completedTaskIds = tracker.completedTaskIds.filter(id=>id!==task.id);
+      tracker.reviewStatus = null;
+      floor.reviewStatus = null;
+      floor.reviewSignature = null;
+      floor.reviewResult = null;
+    }
+    log(`${floor.agent} started for ${worker.name}: "${task.title}"`);
+    return true;
+  }catch(e){
+    worker.status = 'blocked';
+    worker.runtimeStatus = 'failed';
+    log(`${worker.name} could not start: ${e.message || e}`);
+    return false;
+  }
+}
+
+async function assignTask(floorId, title, note, options){
+  options = options || {};
+  ensureFloorStaff(floorId);
+  const fw = floorWorkers(floorId);
+  const floor = floors.find(item=>item.id===floorId) || {};
+  const task = { id: uid('t'), title, note };
+  if(options.initiative) task.initiative = options.initiative;
+  if(options.initiativeId) task.initiativeId = options.initiativeId;
+  const source = options.source || floor.techLeadName || 'Manager & tech lead';
+  let shouldStart = false;
+  let target = fw.find(w=>w.status==='idle' && w.tasks.length===0);
+  if(target){
+    target.tasks.push(task);
+    target.status = 'working';
+    target.updatedAt = Date.now();
+    shouldStart = true;
+    log(`${source} assigned "${title}" to ${target.name}`);
+  } else {
+    fw.sort((a,b)=> a.tasks.length - b.tasks.length);
+    target = fw[0];
+    target.tasks.push(task);
+    target.updatedAt = Date.now();
+    log(`${source} queued "${title}" behind ${target.name} (${target.tasks.length} in queue)`);
+  }
+  if(options.sharedLeadSession){
+    target.sharedLeadSession = true;
+    target.runtimeStatus = 'delegated';
+    target.status = 'working';
+    shouldStart = false;
+  }
+  if(shouldStart) await startWorkerAgent(target, task);
+  if(options.deferSave) return { task, worker:target };
+  await saveAll();
+  render();
+  return { task, worker:target };
+}
+
+function render(){
+  renderOfficeSection();
+  renderFloorTabs();
+  reconcileAllReadyReviews();
+  renderManagerCard();
+  renderChatPanels();
+
+  const fw = floorWorkers(currentFloorId);
+  const currentFloor = floors.find(item=>item.id===currentFloorId) || {};
+  const inboxCount = (currentFloor.inbox || []).length;
+  const counts = { idle:0, working:0, blocked:0 };
+  fw.forEach(w=> counts[w.status]++ );
+  document.getElementById('counts').innerHTML = `
+    <div class="count-chip"><span class="dot working"></span>working <b>${counts.working}</b></div>
+    <div class="count-chip"><span class="dot blocked"></span>blocked <b>${counts.blocked}</b></div>
+    <div class="count-chip"><span class="dot idle"></span>idle <b>${counts.idle}</b></div>
+    <div class="count-chip">inbox <b>${inboxCount}</b></div>
+    <div class="count-chip">team <b>${fw.length}</b></div>
+  `;
+
+  const floorEl = document.getElementById('floor');
+  let cards = fw.map(w=>{
+    const current = w.tasks[0];
+    const queueBehind = w.tasks.length - 1;
+    const displayStatus = w.runtimeStatus==='completed' ? 'review' : (w.runtimeStatus==='failed' ? 'blocked' : w.status);
+    return `
+    <div class="desk status-${displayStatus}" data-id="${w.id}" onclick="openProfileLog('worker','${w.id}')">
+      <div class="flag"></div>
+      <div class="desk-top">
+        <div class="nameplate">${escapeHtml(w.name)}</div>
+        <div class="badge ${displayStatus}">${displayStatus}</div>
+      </div>
+      <div class="desk-surface">
+        <div class="monitor"></div>
+        <div class="monitor-stand"></div>
+        <div class="keyboard"></div>
+        <div class="mug"></div>
+      </div>
+      <div class="person-row">
+        <div class="chair-back"></div>
+        <div class="person">
+          <div class="hair"></div>
+          <div class="head" style="background:${w.skin}"></div>
+          <div class="torso"></div>
+          <div class="arm left"></div>
+          <div class="arm right"></div>
+        </div>
+      </div>
+      <div class="sticky-note">
+        ${current ? escapeHtml(current.title) : 'awaiting next assignment'}${w.status==='working' ? '<span class="working-dot"></span>' : ''}
+      </div>
+      ${queueBehind>0 ? `<div class="queue-note">+${queueBehind} more waiting</div>` : ''}
+      <div class="desk-actions">
+        <button onclick="event.stopPropagation(); openEditModal('${w.id}')">✎ Edit</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  floorEl.innerHTML = `
+    <div class="plant tl"><div class="pot"></div><div class="leaf l1"></div><div class="leaf l2"></div><div class="leaf l3"></div></div>
+    <div class="plant br"><div class="pot"></div><div class="leaf l1"></div><div class="leaf l2"></div><div class="leaf l3"></div></div>
+  ` + cards;
+}
+
+function renderFloorTabs(){
+  const el = document.getElementById('floorTabs');
+  el.innerHTML = floors.map(f=>{
+    const n = floorWorkers(f.id).reduce((sum,w)=> sum + w.tasks.length, 0) + (f.inbox || []).length;
+    return `<div class="floor-tab ${f.id===currentFloorId?'active':''}" onclick="switchFloor('${f.id}')">
+      ${escapeHtml(f.name)} ${f.agent ? `<span class="agent-mini">${escapeHtml(f.agent)}</span>` : ''} <span class="n">${n}</span>
+    </div>`;
+  }).join('') + `<div class="floor-tab-add" onclick="openFloorModal()">＋ floor</div>`;
+}
+
+function reviewRepositoryKey(floor){
+  const result = floor.reviewResult || {};
+  return [floor.id, floor.reviewSignature || '', floor.reviewTrackerId || '', result.pr_title || '', result.summary || ''].join('|');
+}
+
+async function reconcileReadyReview(floor){
+  if(location.protocol==='file:' || floor.reviewStatus!=='ready' || !floor.reviewResult) return;
+  const key = reviewRepositoryKey(floor);
+  const cached = reviewRepositoryStates.get(key);
+  if(cached && (cached.status==='checking' || Date.now()-(cached.checkedAt || 0)<30000)) return;
+  reviewRepositoryStates.set(key, { status:'checking', pushed:false, checkedAt:Date.now() });
+  try{
+    const response = await fetch('/api/repository-state', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ repository:floorRepository(floor) })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Repository check returned ${response.status}`);
+    reviewRepositoryStates.set(key, { status:'checked', checkedAt:Date.now(), ...data });
+    if(data.pushed && floor.reviewStatus==='ready' && reviewRepositoryKey(floor)===key){
+      floor.reviewStatus = 'pushed';
+      const tracker = floor.reviewTrackerId && (floor.multiInitiatives || []).find(item=>item.id===floor.reviewTrackerId);
+      if(tracker) tracker.reviewStatus = 'pushed';
+      await saveAll();
+      log(`Current changes for ${floor.name} are already pushed${data.branch ? ` on ${data.branch}` : ''}; approval action hidden`);
+    }
+  }catch(e){
+    reviewRepositoryStates.set(key, { status:'failed', pushed:false, checkedAt:Date.now() });
+  }
+  render();
+}
+
+function reconcileAllReadyReviews(){
+  for(const floor of floors) reconcileReadyReview(floor);
+}
+
+function renderManagerCard(){
+  const fw = floorWorkers(currentFloorId);
+  const floor = floors.find(f=>f.id===currentFloorId) || {};
+  const floorName = floor.name || '';
+  const agent = ['claude','codex'].includes(floor.agent) ? floor.agent : '';
+  const roleName = floor.techLeadName || 'Unassigned';
+  const taskCount = fw.reduce((sum,w)=>sum+w.tasks.length,0) + (floor.inbox || []).length;
+  const onboarding = ['starting','running'].includes(floor.onboardingStatus);
+  const planning = pendingLeadPlans.has(`lead:${floor.id}`);
+  const reviewing = pendingLeadReviews.has(`lead:${floor.id}`);
+  const answering = (floor.questions || []).some(message=>['starting','working'].includes(message.status));
+  const queuedCount = (floor.inbox || []).length;
+  const failedIntake = (floor.inbox || []).find(request=>request.failed);
+  const repositoryState = floor.reviewStatus==='ready' && floor.reviewResult
+    ? reviewRepositoryStates.get(reviewRepositoryKey(floor)) : null;
+  const checkingPushState = floor.reviewStatus==='ready' && floor.reviewResult && !repositoryState;
+  if(checkingPushState) reconcileReadyReview(floor);
+  const published = floor.reviewStatus==='published' || floor.reviewStatus==='pushed'
+    || !!(floor.reviewResult && floor.reviewResult.pullRequest) || !!(repositoryState && repositoryState.pushed);
+  const reviewLabel = onboarding ? 'learning codebase'
+    : floor.onboardingStatus==='failed' ? 'onboarding failed'
+    : published ? 'PR created'
+    : floor.reviewStatus==='ready' ? 'review approved'
+    : floor.reviewStatus==='issues' ? 'changes requested'
+    : reviewing ? 'reviewing changes'
+    : answering ? 'answering question'
+    : planning ? 'analyzing'
+    : queuedCount ? `${queuedCount} queued` : 'ready';
+  const reviewClass = onboarding || reviewing || answering || planning ? 'working' : (floor.onboardingStatus==='failed' || floor.reviewStatus==='issues' ? 'blocked' : 'idle');
+  const statusControl = !floor.techLeadName
+    ? `<div class="badge blocked">name required</div>`
+    : failedIntake
+      ? `<button onclick="retryFloorInbox('${floor.id}')" title="${escapeHtml(failedIntake.error || 'Lead analysis failed')}">↻ Retry queued task</button>`
+    : published
+      ? ''
+    : checkingPushState || (repositoryState && repositoryState.status==='checking')
+      ? `<div class="badge working">checking repository</div>`
+    : floor.onboardingStatus==='failed'
+      ? `<button onclick="retryFloorOnboarding('${floor.id}')">↻ Retry onboarding</button>`
+      : floor.reviewResult
+        ? `<button onclick="openReviewModal('${floor.id}')">${escapeHtml(reviewLabel)}</button>`
+        : floor.reviewStatus==='failed'
+          ? `<button onclick="retryLeadReview('${floor.id}')">↻ Retry review</button>`
+          : `<div class="badge ${reviewClass}">${escapeHtml(reviewLabel)}</div>`;
+  const repoLabel = floor.repoMode==='clone'
+    ? `clone ${floor.cloneUrl || 'repository'} into ${floor.cloneDirectory || 'a directory'}`
+    : (floor.localPath || 'repository path not configured');
+  const nextInbox = (floor.inbox || [])[0];
+  const inboxLabel = nextInbox
+    ? `inbox: ${nextInbox.initiative}${queuedCount>1 ? ` (+${queuedCount-1} more)` : ''}`
+    : '';
+  document.getElementById('managerCard').innerHTML = `
+    <div class="manager-left profile-link" onclick="openProfileLog('lead','${floor.id}')" title="View manager and tech lead agent activity">
+      <div class="person" style="width:36px;height:46px;">
+        <div class="hair" style="background:#211a2b;"></div>
+        <div class="head" style="background:#e8b98b;"></div>
+        <div class="torso" style="background:linear-gradient(90deg,var(--manager) 0 50%,var(--lead) 50%);"></div>
+        <div class="arm left"></div>
+        <div class="arm right"></div>
+      </div>
+      <div class="manager-info">
+        <div class="eyebrow">${escapeHtml(roleName)} — manager &amp; tech lead</div>
+        <div class="desc">owns the persistent agent session for <b style="color:var(--ink)">${escapeHtml(floorName)}</b>${agent ? ` <span class="runner-tag ${agent}">${agent}</span>` : ' · choose Claude or Codex'}, decides how work is split, delegates it, and reviews the combined result · ${taskCount} active or queued · ${fw.length} permanent employees</div>
+        <div class="launch-command" title="${escapeHtml(repoLabel)}">agent workspace: ${escapeHtml(repoLabel)}</div>
+        ${inboxLabel ? `<div class="launch-command" title="${escapeHtml(inboxLabel)}">${escapeHtml(inboxLabel)}</div>` : ''}
+      </div>
+    </div>
+    <div class="manager-actions">
+      ${statusControl}
+      <button class="secondary" onclick="openFloorModal('${floor.id}')">⚙ Configure</button>
+      <button onclick="openAssignModal()" ${onboarding ? 'disabled title="The agent is learning the codebase"' : ''}>＋ Assign work</button>
+    </div>
+  `;
+}
+
+/* floor modal */
+let pendingReception = null;
+let editingFloorId = null;
+let selectedCloneParent = null;
+let folderBrowserResolver = null;
+let folderBrowserState = { path:'', parent:null, directories:[], selectable:false, requireGit:false };
+function updateRepoFields(){
+  const cloning = document.getElementById('repoMode').value === 'clone';
+  document.getElementById('localRepoFields').hidden = cloning;
+  document.getElementById('cloneRepoFields').hidden = !cloning;
+}
+
+function selectLocalDirectory(title, initial, requireGit){
+  return openInAppFolderBrowser(title, initial, requireGit);
+}
+
+function openInAppFolderBrowser(title, initial, requireGit){
+  if(folderBrowserResolver) folderBrowserResolver(null);
+  document.getElementById('folderBrowserTitle').textContent = title || 'Select folder';
+  document.getElementById('folderBrowserBackdrop').classList.add('open');
+  folderBrowserState.requireGit = !!requireGit;
+  const promise = new Promise(resolve=>{ folderBrowserResolver = resolve; });
+  loadFolderBrowser(initial || '', true);
+  return promise;
+}
+
+async function loadFolderBrowser(path, retryHome){
+  const status = document.getElementById('folderBrowserStatus');
+  folderBrowserState.selectable = false;
+  document.getElementById('folderBrowserSelect').disabled = true;
+  document.getElementById('folderBrowserList').innerHTML = '<div class="folder-browser-status" style="padding:8px;">Loading…</div>';
+  status.textContent = '↻ Reading folders…';
+  try{
+    const response = await fetch('/api/browse-directory', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ path:path || '', requireGit:folderBrowserState.requireGit })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Folder browser returned ${response.status}`);
+    folderBrowserState = { ...folderBrowserState, ...data };
+    document.getElementById('folderBrowserPath').value = data.path;
+    document.getElementById('folderBrowserUp').disabled = !data.parent;
+    document.getElementById('folderBrowserList').innerHTML = data.directories.length
+      ? data.directories.map((directory,index)=>`<button class="folder-browser-entry" onclick="browseFolderIndex(${index})">📁 ${escapeHtml(directory.name)}</button>`).join('')
+      : '<div class="folder-browser-status" style="padding:8px;">No subfolders</div>';
+    const selectButton = document.getElementById('folderBrowserSelect');
+    selectButton.disabled = !data.selectable;
+    status.textContent = folderBrowserState.requireGit && !data.isGit
+      ? '⚠ Open the repository folder itself; it must contain .git.'
+      : '✓ This folder can be selected.';
+  }catch(e){
+    if(retryHome && path){
+      await loadFolderBrowser('', false);
+      return;
+    }
+    status.textContent = `⚠ Cannot browse this folder: ${e.message || e}`;
+  }
+}
+
+function browseFolderIndex(index){
+  const directory = folderBrowserState.directories[index];
+  if(directory) loadFolderBrowser(directory.path, false);
+}
+function browseFolderParent(){
+  if(folderBrowserState.parent) loadFolderBrowser(folderBrowserState.parent, false);
+}
+function goToFolderBrowserPath(){
+  loadFolderBrowser(document.getElementById('folderBrowserPath').value.trim(), false);
+}
+function closeFolderBrowser(){
+  document.getElementById('folderBrowserBackdrop').classList.remove('open');
+  const resolve = folderBrowserResolver;
+  folderBrowserResolver = null;
+  if(resolve) resolve(null);
+}
+function chooseCurrentFolder(){
+  if(!folderBrowserState.selectable) return;
+  const selected = folderBrowserState.path;
+  document.getElementById('folderBrowserBackdrop').classList.remove('open');
+  const resolve = folderBrowserResolver;
+  folderBrowserResolver = null;
+  if(resolve) resolve(selected);
+}
+
+function repositoryFolderName(url){
+  const clean = String(url || '').trim().replace(/[?#].*$/,'').replace(/[\\/]+$/,'');
+  const name = clean.split(/[\\/:]/).pop().replace(/\.git$/i,'').replace(/[^A-Za-z0-9._-]+/g,'-');
+  return name || 'repository';
+}
+
+function updateCloneDestination(){
+  if(!selectedCloneParent) return;
+  const separator = selectedCloneParent.includes('\\') && !selectedCloneParent.includes('/') ? '\\' : '/';
+  document.getElementById('cloneDirectory').value = selectedCloneParent.replace(/[\\/]+$/,'')
+    + separator + repositoryFolderName(document.getElementById('cloneRepoUrl').value);
+}
+
+async function selectRepositoryFolder(){
+  const input = document.getElementById('localRepoPath');
+  const selected = await selectLocalDirectory('Select an existing Git repository', input.value, true);
+  if(selected) input.value = selected;
+}
+
+async function selectCloneParentFolder(){
+  const url = document.getElementById('cloneRepoUrl').value.trim();
+  if(!url){
+    window.alert('Enter the Git repository URL first so the destination folder can be named.');
+    document.getElementById('cloneRepoUrl').focus();
+    return;
+  }
+  const selected = await selectLocalDirectory('Select the parent folder for the clone', selectedCloneParent || '');
+  if(selected){
+    selectedCloneParent = selected;
+    updateCloneDestination();
+  }
+}
+function openFloorModal(id){
+  const floor = floors.find(f=>f.id===id);
+  editingFloorId = floor ? floor.id : null;
+  selectedCloneParent = null;
+  document.getElementById('floorModalTitle').textContent = floor ? 'Configure floor' : 'New floor';
+  document.getElementById('floorSubmitButton').textContent = floor ? '✓ Save floor' : '▣ Build floor';
+  document.getElementById('floorName').value = floor ? floor.name : '';
+  document.getElementById('floorAgent').value = (floor && ['claude','codex'].includes(floor.agent)) ? floor.agent : '';
+  document.getElementById('techLeadName').value = (floor && floor.techLeadName) || '';
+  document.getElementById('repoMode').value = (floor && floor.repoMode) || 'local';
+  document.getElementById('localRepoPath').value = (floor && floor.localPath) || '';
+  document.getElementById('cloneRepoUrl').value = (floor && floor.cloneUrl) || '';
+  document.getElementById('cloneDirectory').value = (floor && floor.cloneDirectory) || '';
+  updateRepoFields();
+  document.getElementById('floorModalBackdrop').classList.add('open');
+  setTimeout(()=>document.getElementById('floorName').focus(),50);
+}
+function closeFloorModal(keepPendingReception){
+  editingFloorId = null;
+  if(!keepPendingReception) pendingReception = null;
+  document.getElementById('floorModalBackdrop').classList.remove('open');
+}
+async function submitFloorModal(){
+  const name = document.getElementById('floorName').value.trim();
+  const agent = document.getElementById('floorAgent').value;
+  const techLeadName = document.getElementById('techLeadName').value.trim();
+  const repoMode = document.getElementById('repoMode').value;
+  const localPath = document.getElementById('localRepoPath').value.trim();
+  const cloneUrl = document.getElementById('cloneRepoUrl').value.trim();
+  const cloneDirectory = document.getElementById('cloneDirectory').value.trim();
+  if(!name){ document.getElementById('floorName').focus(); return; }
+  if(!['claude','codex'].includes(agent)){ document.getElementById('floorAgent').focus(); return; }
+  if(!techLeadName){ document.getElementById('techLeadName').focus(); return; }
+  const leadIsWorker = workers.some(w=>w.floorId===editingFloorId && w.name.toLowerCase()===techLeadName.toLowerCase());
+  if(leadIsWorker){
+    window.alert('The tech lead must be separate from the worker pool. Choose a different lead name.');
+    document.getElementById('techLeadName').focus();
+    return;
+  }
+  if(repoMode==='local' && !localPath){ document.getElementById('localRepoPath').focus(); return; }
+  if(repoMode==='clone' && !cloneUrl){ document.getElementById('cloneRepoUrl').focus(); return; }
+  if(repoMode==='clone' && !cloneDirectory){ document.getElementById('cloneDirectory').focus(); return; }
+  const existing = floors.find(f=>f.id===editingFloorId);
+  const needsOnboarding = !existing || existing.agent!==agent || existing.techLeadName!==techLeadName
+    || existing.repoMode!==repoMode || existing.localPath!==localPath
+    || existing.cloneUrl!==cloneUrl || existing.cloneDirectory!==cloneDirectory;
+  const f = existing || { id: uid('f'), createdAt: Date.now() };
+  if(needsOnboarding){
+    f.techLeadSessionId = null;
+    f.techLeadSessionMode = 'orchestrator-v1';
+    f.onboardingStatus = 'starting';
+    f.onboardingStartedAt = null;
+    f.codebaseContext = null;
+  }
+  Object.assign(f, { name, agent, techLeadName, repoMode, localPath, cloneUrl, cloneDirectory });
+  if(!existing) floors.push(f);
+  ensureFloorStaff(f.id);
+  currentFloorId = f.id;
+  await saveAll();
+  log(`floor "${name}" ${existing ? 'configured' : 'built'} for ${agent}`);
+  closeFloorModal(true);
+  render();
+  if(needsOnboarding) await requestFloorOnboarding(f);
+  if(pendingReception){
+    const p = pendingReception; pendingReception = null;
+    openReceptionModal();
+    document.getElementById('receptionFloor').value = f.id;
+    document.getElementById('receptionTaskName').value = p.title;
+    document.getElementById('receptionTaskNote').value = p.note;
+  }
+}
+function shellQuote(value){ return "'"+String(value).replace(/'/g, "'\\''")+"'"; }
+function launchCommand(floor){
+  if(!floor || !['claude','codex'].includes(floor.agent)) return '';
+  if(floor.repoMode==='local' && floor.localPath) return `cd -- ${shellQuote(floor.localPath)} && ${floor.agent}`;
+  if(floor.repoMode==='clone' && floor.cloneUrl && floor.cloneDirectory){
+    return `git clone -- ${shellQuote(floor.cloneUrl)} ${shellQuote(floor.cloneDirectory)} && cd -- ${shellQuote(floor.cloneDirectory)} && ${floor.agent}`;
+  }
+  return '';
+}
+
+function floorOnboardingPrompt(floor){
+  return [
+    `You are ${floor.techLeadName}, the persistent tech lead for this repository.`,
+    'This is your onboarding turn. Build durable working context before any task is assigned.',
+    'Inspect the repository without modifying it. Read the repository instructions, top-level documentation, dependency and build manifests, important configuration, source layout, test layout, CI workflows, and a small number of representative implementation files. Identify architecture boundaries, coding conventions, verification commands, risky areas, and key files future workers should know.',
+    'Do not edit files, install dependencies, run destructive commands, create commits, switch branches, push, or delegate implementation work. Return only the required structured repository context.'
+  ].join('\n\n');
+}
+
+async function requestFloorOnboarding(floor){
+  if(!floor || !launchCommand(floor)) return false;
+  const profileId = `lead:${floor.id}`;
+  floor.onboardingStatus = 'starting';
+  floor.techLeadSessionId = null;
+  floor.techLeadSessionMode = 'orchestrator-v1';
+  floor.codebaseContext = null;
+  floor.reviewResult = null;
+  floor.reviewStatus = null;
+  await saveAll();
+  render();
+  try{
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId,
+        runType:'onboard',
+        agent:floor.agent,
+        task:`Learn the ${floor.name} codebase`,
+        prompt:floorOnboardingPrompt(floor),
+        repository:floorRepository(floor)
+      })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Agent service returned ${response.status}`);
+    floor.onboardingStatus = 'running';
+    floor.onboardingStartedAt = data.startedAt;
+    if(data.sessionId) floor.techLeadSessionId = data.sessionId;
+    await saveAll();
+    log(`${floor.techLeadName} started learning the ${floor.name} codebase with ${floor.agent}`);
+    render();
+    return true;
+  }catch(e){
+    floor.onboardingStatus = 'failed';
+    floor.onboardingError = String(e.message || e);
+    await saveAll();
+    log(`${floor.techLeadName} could not onboard: ${floor.onboardingError}`);
+    render();
+    return false;
+  }
+}
+
+async function retryFloorOnboarding(floorId){
+  const floor = floors.find(f=>f.id===floorId);
+  if(floor) await requestFloorOnboarding(floor);
+}
+
+async function syncFloorOnboarding(){
+  for(const floor of floors.filter(item=>['starting','running'].includes(item.onboardingStatus))){
+    try{
+      const response = await fetch(`/api/logs?profileId=${encodeURIComponent('lead:'+floor.id)}&since=999999999`, { cache:'no-store' });
+      if(!response.ok) continue;
+      const data = await response.json();
+      if(floor.onboardingStatus==='starting' && !floor.onboardingStartedAt && data.runType!=='onboard'){
+        await requestFloorOnboarding(floor);
+        continue;
+      }
+      if(floor.onboardingStatus==='running' && data.status==='idle'){
+        floor.onboardingStatus = 'failed';
+        floor.onboardingError = 'The local service restarted before onboarding finished.';
+        await saveAll();
+        render();
+        continue;
+      }
+      if(data.runType!=='onboard') continue;
+      if(floor.onboardingStartedAt && data.startedAt && data.startedAt!==floor.onboardingStartedAt) continue;
+      let changed = false;
+      if(data.sessionId && floor.techLeadSessionId!==data.sessionId){
+        floor.techLeadSessionId = data.sessionId;
+        changed = true;
+      }
+      if(data.status==='completed' && data.result){
+        floor.codebaseContext = data.result;
+        floor.onboardingStatus = 'ready';
+        floor.onboardingError = '';
+        changed = true;
+        log(`${floor.techLeadName} finished learning the ${floor.name} codebase`);
+      }else if(data.status==='failed' || (data.status==='idle' && floor.onboardingStartedAt)){
+        floor.onboardingStatus = 'failed';
+        floor.onboardingError = data.status==='idle' ? 'The local service restarted before onboarding finished.' : 'Open the tech lead log for details.';
+        changed = true;
+        log(`${floor.techLeadName}'s codebase onboarding failed`);
+      }
+      if(changed){ await saveAll(); render(); }
+    }catch(e){ /* service health indicator reports connectivity */ }
+  }
+}
+
+function floorAcceptsTasks(floor){
+  if(floor.onboardingStatus==='ready') return true;
+  if(floor.onboardingStatus==='failed'){
+    window.alert('Codebase onboarding failed. Retry it from the manager and tech lead card before assigning work.');
+    return false;
+  }
+  if(!['starting','running'].includes(floor.onboardingStatus)) requestFloorOnboarding(floor);
+  window.alert(`${floor.techLeadName} is learning this codebase first. Assign work after onboarding finishes.`);
+  openProfileLog('lead', floor.id);
+  return false;
+}
+
+function techLeadPrompt(floor, initiative, note){
+  return [
+    `You are ${floor.techLeadName}, the tech lead for this repository.`,
+    `Analyze this requested work: ${initiative}`,
+    note ? `Context from the manager:\n${note}` : '',
+    techLeadSharedContext(floor),
+    'Inspect the repository in read-only mode. Decide whether the work should stay with one worker or be split across multiple workers. Split into at most five independent, concrete workstreams that can be implemented concurrently with minimal overlap. Return the required structured decision, rationale, and workstreams. Do not modify files.'
+  ].filter(Boolean).join('\n\n');
+}
+
+function floorLeadBusy(floor){
+  const profileId = `lead:${floor.id}`;
+  return pendingLeadPlans.has(profileId) || pendingLeadReviews.has(profileId)
+    || (floor.questions || []).some(message=>['starting','working'].includes(message.status));
+}
+
+async function enqueueFloorInitiative(floor, initiative, note, source){
+  floor.inbox = Array.isArray(floor.inbox) ? floor.inbox : [];
+  const request = {
+    id:uid('request'), initiative, note:note || '', source:source || 'floor',
+    queuedAt:Date.now(), lastAttemptAt:0, status:'queued'
+  };
+  floor.inbox.push(request);
+  await saveAll();
+  log(`${source || 'Floor'} queued "${initiative}" for ${floor.techLeadName} on ${floor.name}`);
+  render();
+  dispatchFloorInbox(floor.id);
+  return request;
+}
+
+async function dispatchFloorInbox(floorId){
+  const floor = floors.find(item=>item.id===floorId);
+  if(!floor || dispatchingFloors.has(floorId) || floor.onboardingStatus!=='ready') return;
+  floor.inbox = Array.isArray(floor.inbox) ? floor.inbox : [];
+  const request = floor.inbox[0];
+  if(request && request.status==='planning' && !floorLeadBusy(floor)) return recoverFloorIntake(floor, request);
+  if(floorLeadBusy(floor)) return;
+  if(!request || request.failed || Date.now()-(request.lastAttemptAt || 0)<5000) return;
+  dispatchingFloors.add(floorId);
+  request.lastAttemptAt = Date.now();
+  try{
+    const started = await requestTechLeadPlan(floor, request.initiative, request.note, {
+      quiet:true, requestId:request.id, source:request.source
+    });
+    if(started){
+      const pending = pendingLeadPlans.get(`lead:${floor.id}`);
+      request.status = 'planning';
+      request.startedAt = pending && pending.startedAt;
+      await saveAll();
+      render();
+    }
+  }finally{
+    dispatchingFloors.delete(floorId);
+  }
+}
+
+async function recoverFloorIntake(floor, request){
+  const profileId = `lead:${floor.id}`;
+  dispatchingFloors.add(floor.id);
+  try{
+    const response = await fetch(`/api/logs?profileId=${encodeURIComponent(profileId)}&since=999999999`, { cache:'no-store' });
+    if(!response.ok) return;
+    const data = await response.json();
+    if(data.runType==='plan' && (!request.startedAt || data.startedAt===request.startedAt)){
+      if(['starting','running'].includes(data.status)){
+        request.startedAt = data.startedAt;
+        pendingLeadPlans.set(profileId, {
+          floorId:floor.id, initiative:request.initiative, note:request.note || '',
+          startedAt:data.startedAt, requestId:request.id, source:request.source || 'floor'
+        });
+      }else if(data.status==='completed' && data.result){
+        floor.inbox = floor.inbox.filter(item=>item.id!==request.id);
+        await saveAll();
+        await applyTechLeadPlan({
+          floorId:floor.id, initiative:request.initiative, note:request.note || '',
+          startedAt:data.startedAt, requestId:request.id, source:request.source || 'floor'
+        }, data.result);
+      }else if(data.status==='failed' || data.status==='completed'){
+        request.status = 'failed';
+        request.failed = true;
+        request.error = data.errorMessage || 'The lead analysis did not return a work plan.';
+        await saveAll();
+        render();
+      }
+    }else if(!['starting','running'].includes(data.status)){
+      request.status = 'queued';
+      request.startedAt = null;
+      request.lastAttemptAt = 0;
+      await saveAll();
+      render();
+    }
+  }catch(e){ /* retry recovery on the next intake cycle */ }
+  finally{ dispatchingFloors.delete(floor.id); }
+}
+
+function dispatchAllFloorInboxes(){
+  for(const floor of floors) dispatchFloorInbox(floor.id);
+}
+
+async function retryFloorInbox(floorId){
+  const floor = floors.find(item=>item.id===floorId);
+  const request = floor && (floor.inbox || []).find(item=>item.failed);
+  if(!request) return;
+  request.failed = false;
+  request.error = '';
+  request.status = 'queued';
+  request.lastAttemptAt = 0;
+  await saveAll();
+  render();
+  dispatchFloorInbox(floorId);
+}
+
+async function requestTechLeadPlan(floor, initiative, note, options){
+  options = options || {};
+  const profileId = `lead:${floor.id}`;
+  try{
+    if(floor.techLeadSessionMode!=='orchestrator-v1'){
+      floor.techLeadSessionId = null;
+      floor.techLeadSessionMode = 'orchestrator-v1';
+      await saveAll();
+    }
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId,
+        runType:'plan',
+        agent:floor.agent,
+        task:initiative,
+        prompt:techLeadPrompt(floor, initiative, note),
+        repository:floorRepository(floor),
+        sessionId:floor.techLeadSessionId || undefined
+      })
+    });
+    const data = await response.json();
+    if(!response.ok){
+      const error = new Error(data.error || `Agent service returned ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    pendingLeadPlans.set(profileId, {
+      floorId:floor.id, initiative, note, startedAt:data.startedAt,
+      requestId:options.requestId || null, source:options.source || 'floor'
+    });
+    log(`${floor.techLeadName} started analyzing "${initiative}" with ${floor.agent}`);
+    render();
+    if(!options.quiet) openProfileLog('lead', floor.id);
+    return true;
+  }catch(e){
+    if(!(options.quiet && e.status===409)) log(`${floor.techLeadName} could not start analysis: ${e.message || e}`);
+    if(!options.quiet) window.alert(`Could not start the tech lead: ${e.message || e}`);
+    return false;
+  }
+}
+
+async function applyTechLeadPlan(pending, result){
+  const floor = floors.find(f=>f.id===pending.floorId);
+  if(!floor) return;
+  const streams = Array.isArray(result.workstreams) ? result.workstreams.filter(s=>s && s.title) : [];
+  const useMultiple = result.decision==='multi' && streams.length>1;
+  log(`${floor.techLeadName} decided "${pending.initiative}" is a ${useMultiple ? 'multi-worker' : 'single-worker'} task: ${result.reason || 'no rationale provided'}`);
+  const assignedStreams = useMultiple ? streams : [streams[0] || { title:pending.initiative, note:'' }];
+  const tracker = {
+    id:uid('initiative'), initiative:pending.initiative, createdAt:Date.now(),
+    assignments:[], completedTaskIds:[], sharedSession:true,
+    managerNote:pending.note || '', planResult:result
+  };
+  floor.multiInitiatives = [...(floor.multiInitiatives || []).slice(-9), tracker];
+  for(const stream of assignedStreams){
+    const taskNote = [`Initiative: ${pending.initiative}`, pending.note, result.reason, stream.note].filter(Boolean).join('\n\n');
+    const assigned = await assignTask(floor.id, stream.title, taskNote, {
+      initiative:pending.initiative,
+      initiativeId:tracker.id,
+      source:floor.techLeadName,
+      sharedLeadSession:true,
+      deferSave:true
+    });
+    tracker.assignments.push({
+      taskId:assigned.task.id,
+      title:assigned.task.title,
+      workerId:assigned.worker.id,
+      workerName:assigned.worker.name
+    });
+  }
+  await saveAll();
+  render();
+  await requestLeadOrchestration(floor, pending, result, tracker);
+}
+
+async function syncLeadPlans(){
+  for(const [profileId, pending] of [...pendingLeadPlans.entries()]){
+    try{
+      const response = await fetch(`/api/logs?profileId=${encodeURIComponent(profileId)}&since=999999999`, { cache:'no-store' });
+      if(!response.ok) continue;
+      const data = await response.json();
+      if(data.startedAt!==pending.startedAt) continue;
+      const floor = floors.find(f=>f.id===pending.floorId);
+      if(floor && data.sessionId && floor.techLeadSessionId!==data.sessionId){
+        floor.techLeadSessionId = data.sessionId;
+        await saveAll();
+      }
+      if(data.status==='completed' && data.result){
+        pendingLeadPlans.delete(profileId);
+        if(floor){
+          floor.inbox = (floor.inbox || []).filter(item=>item.id!==pending.requestId);
+          await saveAll();
+        }
+        await applyTechLeadPlan(pending, data.result);
+      }else if(data.status==='failed' || (data.status==='completed' && !data.result)){
+        pendingLeadPlans.delete(profileId);
+        const floor = floors.find(item=>item.id===pending.floorId);
+        if(floor){
+          floor.inbox = Array.isArray(floor.inbox) ? floor.inbox : [];
+          let request = floor.inbox.find(item=>item.id===pending.requestId);
+          if(!request){
+            request = {
+              id:pending.requestId || uid('request'), initiative:pending.initiative,
+              note:pending.note || '', source:pending.source || 'floor',
+              queuedAt:Date.now(), lastAttemptAt:Date.now()
+            };
+            floor.inbox.unshift(request);
+          }
+          request.status = 'failed';
+          request.failed = true;
+          request.error = data.errorMessage || 'The lead analysis did not return a work plan.';
+          await saveAll();
+        }
+        log(`Tech lead analysis failed for "${pending.initiative}" — open the lead profile for details`);
+        render();
+      }
+    }catch(e){ /* health status reports an offline service */ }
+  }
+}
+
+function completedMultiWorkerInitiative(floor){
+  const tracked = (floor.multiInitiatives || [])
+    .filter(item=>item.assignments && item.assignments.length>1
+      && !item.reviewStatus
+      && item.assignments.every(a=>(item.completedTaskIds || []).includes(a.taskId)))
+    .sort((a,b)=>(b.createdAt || 0)-(a.createdAt || 0))[0];
+  if(tracked){
+    return {
+      initiative:tracked.initiative,
+      trackerId:tracked.id,
+      entries:tracked.assignments.map(a=>({
+        worker:{ id:a.workerId, name:a.workerName },
+        task:{ id:a.taskId, title:a.title, initiative:tracked.initiative },
+        completed:true
+      }))
+    };
+  }
+  const groups = new Map();
+  for(const worker of floorWorkers(floor.id)){
+    const task = worker.tasks[0];
+    if(!task || !task.initiative) continue;
+    if(!groups.has(task.initiative)) groups.set(task.initiative, []);
+    groups.get(task.initiative).push({ worker, task, completed:worker.runtimeStatus==='completed' });
+  }
+  return [...groups.entries()]
+    .filter(([, entries])=>entries.length>1 && entries.every(entry=>entry.completed))
+    .map(([initiative, entries])=>({ initiative, entries }))
+    .sort((a,b)=>b.entries.length-a.entries.length)[0] || null;
+}
+
+function techLeadOrchestrationPrompt(floor, pending, result, tracker){
+  const assignments = tracker.assignments.map((assignment, index)=>{
+    const stream = (result.workstreams || [])[index] || {};
+    return `${index+1}. ${assignment.workerName}: ${assignment.title}${stream.note ? `\n   ${stream.note}` : ''}`;
+  }).join('\n');
+  return [
+    `Continue as ${floor.techLeadName}, the tech lead. Keep all coordination in this existing session.`,
+    `Implement this initiative through delegated workers: ${pending.initiative}`,
+    pending.note ? `Manager context:\n${pending.note}` : '',
+    `Approved workstreams:\n${assignments}`,
+    techLeadSharedContext(floor),
+    'You are the coordinator and reviewer, not an implementation worker. Do not edit implementation files yourself. Use the CLI\'s native subagent/agent delegation tools to spawn one worker for each workstream. Give each worker clear file ownership, let independent workers run concurrently, monitor them, and wait for every worker to finish. If integration repairs are needed, delegate those repairs to a worker as well.',
+    'After all delegated workers finish, inspect the combined Git diff and test results. Review integration correctness, overlapping edits, regressions, and missing tests. Do not commit, switch branches, push, or create a pull request.',
+    'Return the required structured review. Set ready to true only when the combined changes are safe to publish. If ready, suggest a concise unused branch name, PR title, and PR body. Put every blocking concern in issues.'
+  ].filter(Boolean).join('\n\n');
+}
+
+async function requestLeadOrchestration(floor, pending, result, tracker){
+  const profileId = `lead:${floor.id}`;
+  const signature = tracker.id+'|'+tracker.assignments.map(item=>item.taskId).sort().join('|');
+  const pendingReview = {
+    floorId:floor.id, initiative:pending.initiative, trackerId:tracker.id,
+    signature, startedAt:null, orchestrating:true
+  };
+  pendingLeadReviews.set(profileId, pendingReview);
+  try{
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId,
+        runType:'orchestrate',
+        agent:floor.agent,
+        task:`Delegate and review ${pending.initiative}`,
+        prompt:techLeadOrchestrationPrompt(floor, pending, result, tracker),
+        repository:floorRepository(floor),
+        sessionId:floor.techLeadSessionId || undefined
+      })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Agent service returned ${response.status}`);
+    tracker.reviewStatus = 'reviewing';
+    floor.reviewStatus = 'reviewing';
+    floor.reviewSignature = signature;
+    floor.reviewTrackerId = tracker.id;
+    floor.reviewResult = null;
+    pendingReview.startedAt = data.startedAt;
+    await saveAll();
+    log(`${floor.techLeadName} resumed the shared ${floor.agent} session and spawned the planned workers`);
+    render();
+  }catch(e){
+    pendingLeadReviews.delete(profileId);
+    tracker.reviewStatus = 'failed';
+    floor.reviewStatus = 'failed';
+    await saveAll();
+    log(`${floor.techLeadName} could not start delegated work: ${e.message || e}`);
+    render();
+  }
+}
+
+function techLeadReviewPrompt(floor, group){
+  const assignments = group.entries.map(({worker,task})=>`- ${worker.name}: ${task.title}`).join('\n');
+  return [
+    `You are ${floor.techLeadName}, the tech lead for this repository.`,
+    `Multiple workers have completed parts of this initiative: ${group.initiative}`,
+    `Assignments:\n${assignments}`,
+    techLeadSharedContext(floor),
+    'Inspect the combined uncommitted Git changes and relevant tests in read-only mode. Review integration correctness, overlapping edits, regressions, missing tests, and whether the changes form one coherent pull request. Do not edit files, create commits, switch branches, push, or create a pull request.',
+    'Return the required structured review. Set ready to true only when the combined changes are safe to publish. If ready, suggest a concise unused branch name, PR title, and PR body. Put every blocking concern in issues.'
+  ].join('\n\n');
+}
+
+async function requestLeadReview(floor, group, signature){
+  const profileId = `lead:${floor.id}`;
+  const pendingReview = { floorId:floor.id, initiative:group.initiative, trackerId:group.trackerId, signature, startedAt:null };
+  pendingLeadReviews.set(profileId, pendingReview);
+  try{
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId,
+        runType:'review',
+        agent:floor.agent,
+        task:`Review combined changes for ${group.initiative}`,
+        prompt:techLeadReviewPrompt(floor, group),
+        repository:floorRepository(floor),
+        sessionId:floor.techLeadSessionId || undefined
+      })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Agent service returned ${response.status}`);
+    floor.reviewStatus = 'reviewing';
+    floor.reviewSignature = signature;
+    floor.reviewTrackerId = group.trackerId || null;
+    floor.reviewResult = null;
+    const tracker = group.trackerId && (floor.multiInitiatives || []).find(item=>item.id===group.trackerId);
+    if(tracker) tracker.reviewStatus = 'reviewing';
+    pendingReview.startedAt = data.startedAt;
+    pendingLeadReviews.set(profileId, pendingReview);
+    await saveAll();
+    log(`${floor.techLeadName} started reviewing combined changes for "${group.initiative}" with ${floor.agent}`);
+    render();
+  }catch(e){
+    pendingLeadReviews.delete(profileId);
+    floor.reviewStatus = 'failed';
+    await saveAll();
+    log(`${floor.techLeadName} could not start the combined review: ${e.message || e}`);
+    render();
+  }
+}
+
+async function maybeStartLeadReviews(){
+  if(location.protocol==='file:') return;
+  for(const floor of floors){
+    const profileId = `lead:${floor.id}`;
+    if(!floor.techLeadName || pendingLeadPlans.has(profileId) || pendingLeadReviews.has(profileId)) continue;
+    const group = completedMultiWorkerInitiative(floor);
+    if(!group) continue;
+    const signature = (group.trackerId || group.initiative)+'|'+group.entries.map(({task})=>task.id).sort().join('|');
+    if(floor.reviewSignature===signature) continue;
+    await requestLeadReview(floor, group, signature);
+  }
+}
+
+async function retryLeadReview(floorId){
+  const floor = floors.find(f=>f.id===floorId);
+  if(!floor) return;
+  const tracker = floor.reviewTrackerId && (floor.multiInitiatives || []).find(item=>item.id===floor.reviewTrackerId);
+  if(tracker && tracker.sharedSession){
+    tracker.reviewStatus = null;
+    floor.reviewStatus = null;
+    floor.reviewResult = null;
+    await saveAll();
+    return requestLeadOrchestration(floor, {
+      floorId:floor.id, initiative:tracker.initiative, note:tracker.managerNote || ''
+    }, tracker.planResult || { workstreams:[] }, tracker);
+  }
+  if(tracker) tracker.reviewStatus = null;
+  floor.reviewStatus = null;
+  floor.reviewSignature = null;
+  floor.reviewResult = null;
+  await saveAll();
+  render();
+  await maybeStartLeadReviews();
+}
+
+async function syncLeadReviews(){
+  for(const [profileId, pending] of [...pendingLeadReviews.entries()]){
+    try{
+      const response = await fetch(`/api/logs?profileId=${encodeURIComponent(profileId)}&since=999999999`, { cache:'no-store' });
+      if(!response.ok) continue;
+      const data = await response.json();
+      if(data.startedAt!==pending.startedAt) continue;
+      const floor = floors.find(f=>f.id===pending.floorId);
+      if(!floor){ pendingLeadReviews.delete(profileId); continue; }
+      if(data.sessionId && floor.techLeadSessionId!==data.sessionId){
+        floor.techLeadSessionId = data.sessionId;
+        await saveAll();
+      }
+      if(data.status==='completed' && data.result){
+        pendingLeadReviews.delete(profileId);
+        floor.reviewResult = data.result;
+        floor.reviewStatus = data.result.ready ? 'ready' : 'issues';
+        const tracker = pending.trackerId && (floor.multiInitiatives || []).find(item=>item.id===pending.trackerId);
+        if(tracker){
+          tracker.reviewStatus = floor.reviewStatus;
+          if(pending.orchestrating){
+            tracker.completedTaskIds = tracker.assignments.map(item=>item.taskId);
+            releaseTrackerWorkers(floor, tracker);
+            floor.leadContext = [...(floor.leadContext || []), {
+              id:uid('context'), time:Date.now(), workerId:'tech-lead',
+              workerName:floor.techLeadName, taskId:tracker.id,
+              taskTitle:`Delegated delivery: ${tracker.initiative}`,
+              initiative:tracker.initiative,
+              summary:String(data.result.summary || 'Delegated work completed and reviewed.').slice(0,6000)
+            }].slice(-100);
+          }
+        }
+        await saveAll();
+        log(`${floor.techLeadName} ${data.result.ready ? 'approved' : 'requested changes to'} the combined work for "${pending.initiative}"`);
+        render();
+        openReviewModal(floor.id);
+      }else if(data.status==='failed'){
+        pendingLeadReviews.delete(profileId);
+        floor.reviewStatus = 'failed';
+        const tracker = pending.trackerId && (floor.multiInitiatives || []).find(item=>item.id===pending.trackerId);
+        if(tracker) tracker.reviewStatus = 'failed';
+        await saveAll();
+        log(`Combined change review failed for "${pending.initiative}" — open the tech lead profile for details`);
+        render();
+      }
+    }catch(e){ /* health status reports an offline service */ }
+  }
+}
+
+function openReviewModal(floorId){
+  const floor = floors.find(f=>f.id===floorId);
+  if(!floor || !floor.reviewResult) return;
+  const result = floor.reviewResult;
+  reviewingFloorId = floor.id;
+  document.getElementById('reviewHint').textContent = `${floor.techLeadName} reviewed the combined changes with ${floor.agent}.`;
+  document.getElementById('reviewSummary').textContent = result.summary || 'No review summary was provided.';
+  const issues = Array.isArray(result.issues) ? result.issues.filter(Boolean) : [];
+  const issueBox = document.getElementById('reviewIssues');
+  issueBox.hidden = issues.length===0;
+  issueBox.textContent = issues.length ? 'Blocking issues:\n- '+issues.join('\n- ') : '';
+  const published = floor.reviewStatus==='published' || floor.reviewStatus==='pushed'
+    || !!result.pullRequest;
+  document.getElementById('reviewPublishFields').hidden = !result.ready || published;
+  document.getElementById('reviewBranch').value = result.suggested_branch || '';
+  document.getElementById('reviewPrTitle').value = result.pr_title || '';
+  document.getElementById('reviewPrBody').value = result.pr_body || '';
+  document.getElementById('reviewPublishStatus').textContent = published
+    ? (result.pullRequest ? `Pull request created: ${result.pullRequest}` : 'These changes are already pushed.')
+    : result.ready ? 'Waiting for your approval.' : 'Publishing is disabled until the blocking issues are resolved and reviewed again.';
+  const button = document.getElementById('publishReviewButton');
+  button.hidden = !result.ready || published;
+  button.disabled = false;
+  document.getElementById('reviewModalBackdrop').classList.add('open');
+}
+
+function closeReviewModal(){
+  reviewingFloorId = null;
+  document.getElementById('reviewModalBackdrop').classList.remove('open');
+}
+
+async function publishReviewedChanges(){
+  const floor = floors.find(f=>f.id===reviewingFloorId);
+  if(!floor || !floor.reviewResult || !floor.reviewResult.ready) return;
+  const branch = document.getElementById('reviewBranch').value.trim();
+  const title = document.getElementById('reviewPrTitle').value.trim();
+  const body = document.getElementById('reviewPrBody').value.trim();
+  if(!branch || !title){
+    document.getElementById('reviewPublishStatus').textContent = 'Branch and title are required.';
+    return;
+  }
+  const repo = floor.repoMode==='clone' ? floor.cloneDirectory : floor.localPath;
+  const confirmed = window.confirm(`Publish all current changes in ${repo}?\n\nThis will create/switch to branch "${branch}", stage all changes, commit, push to origin, and create a GitHub pull request.`);
+  if(!confirmed) return;
+  const button = document.getElementById('publishReviewButton');
+  const status = document.getElementById('reviewPublishStatus');
+  button.disabled = true;
+  status.textContent = 'Creating branch, commit, push, and pull request…';
+  try{
+    const response = await fetch('/api/publish', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ repository:floorRepository(floor), branch, title, body })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Publish returned ${response.status}`);
+    floor.reviewStatus = 'published';
+    floor.reviewResult.pullRequest = data.pullRequest;
+    const tracker = floor.reviewTrackerId && (floor.multiInitiatives || []).find(item=>item.id===floor.reviewTrackerId);
+    if(tracker) tracker.reviewStatus = 'published';
+    await saveAll();
+    status.textContent = `Created ${data.pullRequest}`;
+    log(`Published ${data.branch} and created pull request ${data.pullRequest}`);
+    render();
+  }catch(e){
+    status.textContent = `Publish stopped: ${e.message || e}`;
+    button.disabled = false;
+  }
+}
+async function switchFloor(id){
+  currentFloorId = id;
+  const questionInput = document.getElementById('leadQuestionInput');
+  if(questionInput) questionInput.value = '';
+  await saveAll();
+  render();
+}
+
+/* reception modal */
+function populateReceptionFloors(selectedId){
+  const sel = document.getElementById('receptionFloor');
+  sel.innerHTML = floors.map(f=>`<option value="${f.id}">${escapeHtml(f.name)}${['starting','running'].includes(f.onboardingStatus) ? ' — learning codebase' : ''}</option>`).join('');
+  sel.value = selectedId || currentFloorId;
+}
+function openReceptionModal(){
+  populateReceptionFloors(currentFloorId);
+  document.getElementById('receptionTaskName').value='';
+  document.getElementById('receptionTaskNote').value='';
+  document.getElementById('receptionModalBackdrop').classList.add('open');
+  setTimeout(()=>document.getElementById('receptionTaskName').focus(),50);
+}
+function closeReceptionModal(){
+  document.getElementById('receptionModalBackdrop').classList.remove('open');
+}
+function receptionNewFloor(){
+  pendingReception = {
+    title: document.getElementById('receptionTaskName').value.trim(),
+    note: document.getElementById('receptionTaskNote').value.trim()
+  };
+  closeReceptionModal();
+  openFloorModal();
+}
+async function submitReceptionModal(){
+  const floorId = document.getElementById('receptionFloor').value;
+  const title = document.getElementById('receptionTaskName').value.trim();
+  if(!title || !floorId) return;
+  const note = document.getElementById('receptionTaskNote').value.trim();
+  const floor = floors.find(f=>f.id===floorId) || {};
+  if(!launchCommand(floor) || !floor.techLeadName){
+    pendingReception = { title, note };
+    closeReceptionModal();
+    openFloorModal(floorId);
+    return;
+  }
+  const floorName = floor.name || '';
+  currentFloorId = floorId;
+  closeReceptionModal();
+  await enqueueFloorInitiative(floor, title, note, 'Pam');
+  log(`Pam delivered "${title}" to ${floorName}`);
+}
+
+/* assign modal */
+function openAssignModal(){
+  const floor = floors.find(f=>f.id===currentFloorId);
+  if(!launchCommand(floor) || !floor.techLeadName){
+    openFloorModal(currentFloorId);
+    return;
+  }
+  if(!floorAcceptsTasks(floor)) return;
+  document.getElementById('taskName').value='';
+  document.getElementById('taskNote').value='';
+  const fw = floorWorkers(currentFloorId);
+  const available = fw.some(worker=>worker.status==='idle' && worker.tasks.length===0);
+  const hint = available
+    ? `${floor.techLeadName} will decide whether this needs one employee or multiple employees.`
+    : `The team is currently assigned. ${floor.techLeadName} will analyze this work and keep it queued until employees are available.`;
+  document.getElementById('assignHint').textContent = hint;
+  document.getElementById('assignModalBackdrop').classList.add('open');
+  setTimeout(()=>document.getElementById('taskName').focus(),50);
+}
+function closeAssignModal(){ document.getElementById('assignModalBackdrop').classList.remove('open'); }
+async function submitAssignModal(){
+  const name = document.getElementById('taskName').value.trim();
+  if(!name) return;
+  const note = document.getElementById('taskNote').value.trim();
+  const floor = floors.find(f=>f.id===currentFloorId);
+  closeAssignModal();
+  await enqueueFloorInitiative(floor, name, note, 'Floor assignment');
+}
+
+/* edit modal */
+function openEditModal(id){
+  const w = workers.find(x=>x.id===id);
+  if(!w) return;
+  editingId = id;
+  document.getElementById('editModalTitle').textContent = w.name;
+  document.getElementById('editStatus').value = ['idle','working','blocked'].includes(w.status) ? w.status : 'idle';
+  document.getElementById('editStatus').disabled = !w.tasks.length;
+  document.getElementById('editNote').value = (w.tasks[0] && w.tasks[0].note) || '';
+  document.getElementById('editNote').disabled = !w.tasks.length;
+  document.getElementById('retryWorkerButton').disabled = !w.tasks.length;
+  document.getElementById('markDoneButton').disabled = !w.tasks.length;
+  const queueWrap = document.getElementById('queueListWrap');
+  const behind = w.tasks.slice(1);
+  if(behind.length===0){
+    queueWrap.style.display='none';
+  } else {
+    queueWrap.style.display='block';
+    document.getElementById('queueList').innerHTML = behind.map((t,i)=>`
+      <div class="queue-item">
+        <span>${escapeHtml(t.title)}</span>
+        <button onclick="removeQueuedTask(${i+1})">remove</button>
+      </div>`).join('');
+  }
+  document.getElementById('editModalBackdrop').classList.add('open');
+}
+function closeEditModal(){ editingId=null; document.getElementById('editModalBackdrop').classList.remove('open'); }
+
+async function removeQueuedTask(idx){
+  const w = workers.find(x=>x.id===editingId);
+  if(!w) return;
+  const removed = w.tasks.splice(idx,1)[0];
+  removeTrackedTask(w.floorId, removed);
+  w.updatedAt = Date.now();
+  await saveAll();
+  log(`"${removed.title}" dropped from ${w.name}'s queue`);
+  openEditModal(editingId);
+  render();
+}
+
+async function submitEditModal(){
+  const w = workers.find(x=>x.id===editingId);
+  if(!w) return;
+  const newStatus = document.getElementById('editStatus').value;
+  const note = document.getElementById('editNote').value.trim();
+  w.status = w.tasks.length ? (newStatus==='blocked' ? 'blocked' : 'working') : 'idle';
+  if(w.tasks[0]) w.tasks[0].note = note;
+  w.updatedAt = Date.now();
+  await saveAll();
+  log(`${w.name} marked ${w.status}`);
+  closeEditModal();
+  render();
+}
+
+async function retryWorkerAgent(){
+  const w = workers.find(x=>x.id===editingId);
+  if(!w || !w.tasks[0]) return;
+  if(w.sharedLeadSession){
+    const floor = floors.find(f=>f.id===w.floorId);
+    const tracker = floor && (floor.multiInitiatives || []).find(item=>item.id===w.tasks[0].initiativeId);
+    closeEditModal();
+    if(floor && tracker){
+      await requestLeadOrchestration(floor, {
+        floorId:floor.id, initiative:tracker.initiative, note:tracker.managerNote || ''
+      }, tracker.planResult || { workstreams:[] }, tracker);
+    }
+    return;
+  }
+  w.runtimeStatus = 'starting';
+  await startWorkerAgent(w, w.tasks[0]);
+  await saveAll();
+  closeEditModal();
+  render();
+}
+
+async function markTaskDone(){
+  const w = workers.find(x=>x.id===editingId);
+  if(!w || !w.tasks.length){
+    closeEditModal();
+    render();
+    return;
+  }
+  const done = w.tasks.shift();
+  if(done.initiativeId){
+    const floor = floors.find(item=>item.id===w.floorId);
+    const tracker = floor && (floor.multiInitiatives || []).find(item=>item.id===done.initiativeId);
+    if(tracker) tracker.completedTaskIds = tracker.completedTaskIds || [];
+    if(tracker && !tracker.completedTaskIds.includes(done.id)) tracker.completedTaskIds.push(done.id);
+  }
+  w.status = w.tasks.length ? 'working' : 'idle';
+  w.updatedAt = Date.now();
+  if(w.tasks.length && !w.sharedLeadSession) await startWorkerAgent(w, w.tasks[0]);
+  if(w.sharedLeadSession) w.runtimeStatus = w.tasks.length ? 'delegated' : 'idle';
+  else if(!w.tasks.length) w.runtimeStatus = 'idle';
+  await saveAll();
+  if(done) log(`${w.name} finished "${done.title}"`);
+  if(w.tasks.length) log(`${w.name} moved on to "${w.tasks[0].title}"`);
+  closeEditModal();
+  render();
+}
+
+function tickClock(){ document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
+setInterval(tickClock,1000); tickClock();
+setInterval(render, 30000);
+setInterval(syncWorkerRuntime, 3000);
+setInterval(syncFloorOnboarding, 2000);
+setInterval(syncLeadPlans, 2000);
+setInterval(syncLeadReviews, 2000);
+setInterval(syncChatRuns, 1500);
+setInterval(maybeStartLeadReviews, 3000);
+setInterval(dispatchAllFloorInboxes, 2000);
+setInterval(checkAgentService, 15000); checkAgentService();
+
+renderTicker();
+loadAll();
+</script>
+</body>
+</html>

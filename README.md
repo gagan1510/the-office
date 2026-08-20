@@ -14,8 +14,11 @@ The application runs entirely on your computer. The Python server listens only o
 - Build repository context before accepting implementation work.
 - Keep one persistent Manager & Tech Lead session per floor.
 - Give every floor a stable team of five named employees who are reused across tasks.
-- Let the lead analyze each task and decide whether it needs one worker or multiple workers.
-- Queue reception and floor assignments durably while the shared lead session is busy.
+- Let reception analyze an incoming task and route scoped work to every repository floor it requires.
+- Let each lead analyze its routed work and decide whether it needs one worker or multiple workers.
+- Let floor leads make targeted, read-only consultation calls to other floors before finalizing a plan.
+- Give floor questions and reports read-only access to the context and repositories of other onboarded floors when explicitly needed.
+- Queue reception, inter-floor calls, and floor assignments durably while shared lead sessions are busy.
 - Delegate multi-worker work through the CLI's native subagent support.
 - Return workers to the available pool as soon as implementation finishes.
 - View human-readable, live CLI activity by clicking a profile or worker.
@@ -117,11 +120,15 @@ The selected agent first inspects the repository in a read-only onboarding run. 
 ## Work lifecycle
 
 ```text
-User task
+User task at reception
    ↓
-Persistent floor inbox
+Reception analyzes repository ownership
+   ↓
+One or more persistent floor inboxes
    ↓
 Manager & Tech Lead analyzes the task
+   ↓
+Optional read-only calls to other floor leads
    ↓
 Single-worker or multi-worker decision
    ↓
@@ -138,7 +145,13 @@ Branch push and GitHub pull request
 
 The Manager & Tech Lead coordinates and reviews; it does not take implementation work directly. For multi-worker tasks, it assigns distinct workstreams, waits for the workers, and reviews their combined result.
 
-Pam and the floor assignment form both submit to the same persistent floor inbox. If the lead session is already planning, orchestrating, reviewing, answering a question, or recovering after a refresh, new work stays visibly queued and is dispatched in order when the session becomes available. Worker desks are released after implementation completes; user approval, merging, and publishing do not keep them occupied.
+Pam first compares each reception task with the onboarded summaries for all configured floors. She can create one scoped route or several cross-repository routes, and each route enters the corresponding floor's persistent inbox. The floor assignment form still sends work directly to the currently open floor.
+
+During planning, a lead can request targeted knowledge from another onboarded floor. The receiving lead answers in its own persistent session using read-only repository access. The originating lead waits for those calls, adds their structured answers to its context, and then finalizes the worker plan. Calls are limited to one consultation round per floor request so floors cannot loop indefinitely.
+
+Each lead also receives a directory of the other onboarded floors, including their names, repository paths, onboarding summaries, and architecture. When a task explicitly asks for a detail or context from another floor, the lead must call that floor unless the exact information is already available in the directory. Read-only questions and reports may inspect another floor directly when needed. Implementation remains repository-owned: another floor is context-only unless reception routed an implementation workstream to it.
+
+If a lead session is already planning, consulting, orchestrating, reviewing, answering a question, or recovering after a refresh, new work stays visibly queued and is dispatched in order when the session becomes available. Worker desks are released after implementation completes; user approval, merging, and publishing do not keep them occupied.
 
 Nothing is pushed automatically. The publish action shows the proposed branch, commit/PR title, and PR body, then asks for confirmation before it changes branches, stages files, commits, pushes, or invokes `gh pr create`.
 
@@ -157,7 +170,7 @@ Checks refresh every 30 seconds. Once a clean current commit is confirmed on a r
 
 The **Chat Room** is separate from the office floors. Choose Claude or Codex and use it as a plain conversational assistant. Chat Room prompts prohibit repository edits and external actions.
 
-Each floor also has an **Ask _name_** section. Those answers come from the persistent floor session and include the repository context gathered during onboarding. Codebase questions are read-only and cannot be asked while the lead is handling another turn.
+Each floor also has an **Ask _name_** section. Those answers come from the persistent floor session and include the repository context gathered during onboarding. You can name another onboarded floor to use its context or inspect its repository in read-only mode. Questions are read-only and cannot be asked while the lead is handling another turn.
 
 ## Reports
 

@@ -22,7 +22,10 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 1_000_000
-SUPPORTED_RUN_TYPES = ("work", "chat", "question", "onboard", "plan", "review", "orchestrate", "report")
+SUPPORTED_RUN_TYPES = (
+    "work", "chat", "question", "onboard", "plan", "review", "orchestrate",
+    "report", "reception", "floor_call",
+)
 MAX_LOG_LINES = 5000
 lock = threading.RLock()
 clone_lock = threading.Lock()
@@ -31,7 +34,7 @@ runs: dict[str, dict] = {}
 PLAN_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["decision", "reason", "workstreams"],
+    "required": ["decision", "reason", "workstreams", "floor_calls"],
     "properties": {
         "decision": {"type": "string", "enum": ["single", "multi"]},
         "reason": {"type": "string"},
@@ -49,6 +52,56 @@ PLAN_SCHEMA = {
                 },
             },
         },
+        "floor_calls": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["floor_id", "question", "reason"],
+                "properties": {
+                    "floor_id": {"type": "string"},
+                    "question": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+RECEPTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["reason", "routes"],
+    "properties": {
+        "reason": {"type": "string"},
+        "routes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["floor_id", "title", "note", "role"],
+                "properties": {
+                    "floor_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "note": {"type": "string"},
+                    "role": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+FLOOR_CALL_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["answer", "considerations", "relevant_files"],
+    "properties": {
+        "answer": {"type": "string"},
+        "considerations": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+        "relevant_files": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
     },
 }
 
@@ -467,9 +520,9 @@ def agent_command(
             command = [executable, "exec", "resume", "--json"]
             if run_type == "chat":
                 command += ["--skip-git-repo-check"]
-            if run_type in ("question", "review", "report"):
+            if run_type in ("question", "review", "report", "floor_call"):
                 command += ["-c", 'sandbox_mode="read-only"']
-            if run_type in ("onboard", "plan", "review", "orchestrate", "report"):
+            if run_type in ("onboard", "plan", "review", "orchestrate", "report", "reception", "floor_call"):
                 command += ["--output-schema", schema_path, "-o", output_path]
             return command + [session_id, prompt]
         command = [
@@ -477,11 +530,11 @@ def agent_command(
             "exec",
             "--json",
         ]
-        if run_type in ("review", "chat", "question", "report"):
+        if run_type in ("review", "chat", "question", "report", "reception", "floor_call"):
             command += ["--sandbox", "read-only"]
             if run_type == "chat":
                 command += ["--skip-git-repo-check"]
-            if run_type in ("review", "report"):
+            if run_type in ("review", "report", "reception", "floor_call"):
                 command += ["--output-schema", schema_path, "-o", output_path]
         else:
             # --approve-for-me already selects the workspace-write policy and cannot be
@@ -500,10 +553,10 @@ def agent_command(
             "--verbose",
             "--permission-mode",
         ]
-        command += ["plan" if run_type in ("review", "chat", "question", "report") else "acceptEdits"]
+        command += ["plan" if run_type in ("review", "chat", "question", "report", "reception", "floor_call") else "acceptEdits"]
         if run_type == "chat":
             command += ["--tools", ""]
-        if run_type in ("onboard", "plan", "review", "orchestrate", "report"):
+        if run_type in ("onboard", "plan", "review", "orchestrate", "report", "reception", "floor_call"):
             command += ["--json-schema", json.dumps(output_schema)]
         if session_id:
             command += ["--resume", session_id]
@@ -521,6 +574,8 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             else PLAN_SCHEMA if run["runType"] == "plan"
             else REVIEW_SCHEMA if run["runType"] in ("review", "orchestrate")
             else REPORT_SCHEMA if run["runType"] == "report"
+            else RECEPTION_SCHEMA if run["runType"] == "reception"
+            else FLOOR_CALL_SCHEMA if run["runType"] == "floor_call"
             else None
         )
         if output_schema and run["agent"] == "codex":
@@ -543,6 +598,8 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             "review": ("reviewing", "Reviewing changes"),
             "question": ("thinking", "Answering a question"),
             "report": ("researching", "Investigating for a report"),
+            "reception": ("thinking", "Routing work across floors"),
+            "floor_call": ("coordinating", "Consulting another floor"),
             "chat": ("thinking", "Writing a response"),
         }.get(run["runType"], ("thinking", "Starting the task"))
         set_activity(run, *initial_activity)
@@ -617,6 +674,10 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
                 raise RuntimeError("Tech lead returned an invalid change review.")
             if run["runType"] == "report" and not isinstance(candidate.get("executive_summary"), str):
                 raise RuntimeError("The employee returned an invalid report.")
+            if run["runType"] == "reception" and not isinstance(candidate.get("routes"), list):
+                raise RuntimeError("Reception returned an invalid routing plan.")
+            if run["runType"] == "floor_call" and not isinstance(candidate.get("answer"), str):
+                raise RuntimeError("The consulted floor returned an invalid answer.")
             plan_result = candidate
         with lock:
             run["returncode"] = returncode

@@ -939,7 +939,7 @@
       <div class="bell"></div>
       <div class="reception-info">
         <div class="eyebrow">reception — pam</div>
-        <div class="desc">drop off any task here — say which floor it's for, we'll take it from there</div>
+        <div class="desc">drop off any task here — Pam will analyze it and route it to every floor it needs</div>
       </div>
     </div>
     <button onclick="openReceptionModal()">＋ New task</button>
@@ -955,12 +955,12 @@
         <div class="chat-card-head">
           <div>
             <div class="chat-card-title" id="leadQuestionTitle">⌁ Ask the tech lead</div>
-            <div class="chat-card-subtitle" id="leadQuestionSubtitle">Ask about the onboarded codebase, architecture, conventions, or risks.</div>
+            <div class="chat-card-subtitle" id="leadQuestionSubtitle">Ask about this codebase or request read-only context from another floor.</div>
           </div>
         </div>
         <div class="chat-thread" id="leadQuestionThread"></div>
         <div class="chat-compose">
-          <textarea id="leadQuestionInput" rows="2" placeholder="Ask a question about this codebase…" onkeydown="handleChatKey(event,sendLeadQuestion)"></textarea>
+          <textarea id="leadQuestionInput" rows="2" placeholder="Ask about this codebase or another floor…" onkeydown="handleChatKey(event,sendLeadQuestion)"></textarea>
           <button id="leadQuestionSend" onclick="sendLeadQuestion()">→ Ask</button>
         </div>
       </section>
@@ -1111,9 +1111,12 @@
 <div class="modal-backdrop" id="receptionModalBackdrop">
   <div class="modal">
     <h2>Drop off a task</h2>
-    <p class="hint">Pick the floor it belongs to. We'll route it to whoever's free there, same as always.</p>
-    <label for="receptionFloor">Floor</label>
-    <select id="receptionFloor"></select>
+    <p class="hint">Pam will analyze the task against all onboarded floors and send scoped work to as many as required.</p>
+    <label for="receptionAgent">Reception agent</label>
+    <select id="receptionAgent">
+      <option value="codex">Codex</option>
+      <option value="claude">Claude</option>
+    </select>
     <label for="receptionTaskName">Task</label>
     <input id="receptionTaskName" type="text" placeholder="e.g. Fix MongoDB pool exhaustion" maxlength="80">
     <label for="receptionTaskNote">Note (optional)</label>
@@ -1215,12 +1218,18 @@ let activeLogProfile = null;
 let profileLogTimer = null;
 let reviewingFloorId = null;
 let officeChat = { agent:'codex', section:'office', sessionIds:{}, messages:[] };
+let reception = { agent:'codex', inbox:[] };
+let floorCalls = [];
 const pendingLeadPlans = new Map();
 const pendingLeadReviews = new Map();
 const pendingFloorReports = new Map();
 const reviewRepositoryStates = new Map();
 const dispatchingFloors = new Set();
 const dispatchingReports = new Set();
+const pendingFloorCalls = new Map();
+const dispatchingFloorCalls = new Set();
+let receptionRun = null;
+let dispatchingReception = false;
 let agentServiceRunTypes = null;
 
 function uid(p){ return p+'_'+Date.now()+'_'+Math.floor(Math.random()*1000); }
@@ -1338,6 +1347,9 @@ async function loadAll(){
       floors = data.floors || [];
       workers = data.workers || [];
       officeChat = data.officeChat || officeChat;
+      reception = data.reception || reception;
+      reception.inbox = Array.isArray(reception.inbox) ? reception.inbox : [];
+      floorCalls = Array.isArray(data.floorCalls) ? data.floorCalls : [];
       currentFloorId = data.currentFloorId || (floors[0] && floors[0].id) || null;
     } else {
       await migrateFromV1();
@@ -1394,7 +1406,7 @@ async function migrateFromV1(){
 
 async function saveAll(){
   try{
-    await officeStorage.set(STORAGE_KEY, JSON.stringify({ schemaVersion:4, floors, workers, officeChat, currentFloorId }));
+    await officeStorage.set(STORAGE_KEY, JSON.stringify({ schemaVersion:5, floors, workers, officeChat, reception, floorCalls, currentFloorId }));
   }catch(e){
     console.error('save failed', e);
   }
@@ -1463,7 +1475,7 @@ function renderChatPanels(){
   floor.questions = Array.isArray(floor.questions) ? floor.questions : [];
   document.getElementById('leadQuestionTitle').textContent = `⌁ Ask ${floor.techLeadName || 'the tech lead'}`;
   document.getElementById('leadQuestionSubtitle').textContent = floor.onboardingStatus==='ready'
-    ? `Questions are answered from the persistent ${floor.agent} session that onboarded this codebase.`
+    ? `Questions use this floor's persistent ${floor.agent} session, with read-only access to other onboarded floors when requested.`
     : 'Codebase questions become available after onboarding finishes.';
   const leadThread = document.getElementById('leadQuestionThread');
   leadThread.innerHTML = chatMessagesHtml(floor.questions, 'No codebase questions yet.');
@@ -1528,8 +1540,10 @@ function techLeadQuestionPrompt(floor, question){
   return [
     `Continue as ${floor.techLeadName}, the persistent tech lead for this repository.`,
     'Answer this codebase question directly using your onboarding knowledge, prior session context, and read-only repository inspection when useful.',
-    'Do not modify files, create tasks, spawn workers, commit, push, or take external actions. If the repository does not establish the answer, say what is uncertain.',
     techLeadSharedContext(floor),
+    crossFloorDirectory(floor, true),
+    'If the user names another floor or asks for context owned by it, use the supplied cross-floor context and, when necessary, inspect that floor\'s repository path in read-only mode. Clearly distinguish facts from your own floor and facts obtained from another floor.',
+    'Do not modify files in any repository, create tasks, spawn workers, commit, push, or take external actions. If the available floor repositories do not establish the answer, say what is uncertain.',
     `User question:\n${question}`
   ].join('\n\n');
 }
@@ -1543,8 +1557,7 @@ async function sendLeadQuestion(){
     window.alert('Let the tech lead finish codebase onboarding first.');
     return;
   }
-  if((floor.questions || []).some(message=>message.status==='working')
-    || pendingLeadPlans.has(`lead:${floor.id}`) || pendingLeadReviews.has(`lead:${floor.id}`)){
+  if(floorLeadBusy(floor)){
     window.alert('The tech lead is busy. Ask again after the current turn finishes.');
     return;
   }
@@ -1645,7 +1658,7 @@ function logProfile(kind, id){
     title:`${floor.techLeadName || 'Unassigned'} — manager & tech lead`,
     agent:floor.agent||''
   };
-  return { key:'reception', kind, title:'Pam — reception', agent:floor.agent||'' };
+  return { key:'reception', kind, title:'Pam — reception', agent:reception.agent||floor.agent||'' };
 }
 
 function clipLogText(value, limit){
@@ -2025,6 +2038,36 @@ function techLeadSharedContext(floor){
     : 'Shared floor context: onboarding has not completed and no worker outcomes are recorded.';
 }
 
+function floorRepositoryPath(floor){
+  return floor.repoMode==='clone' ? floor.cloneDirectory : floor.localPath;
+}
+
+function crossFloorDirectory(floor, detailed){
+  const entries = floors.filter(item=>item.id!==floor.id && item.onboardingStatus==='ready').map(item=>{
+    const context = item.codebaseContext || {};
+    const entry = {
+      id:item.id,
+      name:item.name,
+      tech_lead:item.techLeadName,
+      repository_path:floorRepositoryPath(item),
+      summary:context.summary || '',
+      architecture:context.architecture || ''
+    };
+    if(detailed){
+      entry.conventions = context.conventions || [];
+      entry.risk_areas = context.risk_areas || [];
+      entry.key_files = context.key_files || [];
+      entry.recent_context = (item.leadContext || []).slice(-10).map(value=>({
+        task:value.taskTitle, initiative:value.initiative, summary:value.summary
+      }));
+    }
+    return entry;
+  });
+  return entries.length
+    ? `Cross-floor directory (other repositories are read-only context unless reception explicitly routed implementation there):\n${JSON.stringify(entries, null, 2).slice(0,24000)}`
+    : 'Cross-floor directory: no other onboarded floors are available.';
+}
+
 function floorRepository(floor){
   return floor.repoMode==='clone'
     ? { mode:'clone', url:floor.cloneUrl, destination:floor.cloneDirectory }
@@ -2125,6 +2168,13 @@ async function assignTask(floorId, title, note, options){
 
 function render(){
   renderOfficeSection();
+  const receptionDesc = document.querySelector('#receptionCard .reception-info .desc');
+  if(receptionDesc){
+    const activeReception = reception.inbox.filter(item=>['queued','analyzing'].includes(item.status));
+    receptionDesc.textContent = activeReception.length
+      ? `analyzing and routing ${activeReception.length} task${activeReception.length===1 ? '' : 's'} across the office`
+      : 'drop off any task here — Pam will analyze it and route it to every floor it needs';
+  }
   renderFloorTabs();
   reconcileAllReadyReviews();
   renderManagerCard();
@@ -2597,7 +2647,6 @@ async function submitFloorModal(){
   if(pendingReception){
     const p = pendingReception; pendingReception = null;
     openReceptionModal();
-    document.getElementById('receptionFloor').value = f.id;
     document.getElementById('receptionTaskName').value = p.title;
     document.getElementById('receptionTaskNote').value = p.note;
   }
@@ -2727,7 +2776,11 @@ function techLeadPrompt(floor, initiative, note){
     `Analyze this requested work: ${initiative}`,
     note ? `Context from the manager:\n${note}` : '',
     techLeadSharedContext(floor),
-    'Inspect the repository in read-only mode. Decide whether the work should stay with one worker or be split across multiple workers. Split into at most five independent, concrete workstreams that can be implemented concurrently with minimal overlap. Return the required structured decision, rationale, and workstreams. Do not modify files.'
+    crossFloorDirectory(floor, false),
+    'Inspect the repository in read-only mode. Decide whether the work should stay with one worker or be split across multiple workers. Split into at most five independent, concrete workstreams that can be implemented concurrently with minimal overlap.',
+    'If knowledge owned by another floor is genuinely required, add a targeted floor_calls entry using its exact floor id. If the user explicitly names another floor or asks to use a detail, contract, decision, or context from it, you must request a call to that floor unless the exact requested information is already present in the supplied cross-floor directory. Combine related questions into one call per floor. Otherwise do not request unnecessary calls.',
+    'Other floor repositories are context-only here. Do not plan edits outside this floor; reception must route implementation to every repository that needs changes.',
+    'Return the required structured decision, rationale, workstreams, and floor_calls. Do not modify files.'
   ].filter(Boolean).join('\n\n');
 }
 
@@ -2735,6 +2788,8 @@ function floorLeadBusy(floor){
   const profileId = `lead:${floor.id}`;
   return pendingLeadPlans.has(profileId) || pendingLeadReviews.has(profileId)
     || dispatchingFloors.has(floor.id) || dispatchingReports.has(floor.id)
+    || pendingFloorCalls.has(profileId) || dispatchingFloorCalls.has(floor.id)
+    || floorCalls.some(call=>call.toFloorId===floor.id && call.status==='working')
     || (floor.questions || []).some(message=>['starting','working'].includes(message.status));
 }
 
@@ -2752,18 +2807,86 @@ async function enqueueFloorInitiative(floor, initiative, note, source){
   return request;
 }
 
+function floorRequestNote(request){
+  const calls = floorCalls.filter(call=>(request.consultationIds || []).includes(call.id));
+  const answers = calls.filter(call=>call.status==='completed').map(call=>{
+    const target = floors.find(item=>item.id===call.toFloorId);
+    const result = call.result || {};
+    return [
+      `Consultation with ${target ? target.name : call.toFloorId}: ${call.question}`,
+      result.answer || '',
+      (result.considerations || []).length ? `Considerations:\n- ${result.considerations.join('\n- ')}` : '',
+      (result.relevant_files || []).length ? `Relevant files on their floor:\n- ${result.relevant_files.join('\n- ')}` : ''
+    ].filter(Boolean).join('\n');
+  });
+  const failures = calls.filter(call=>call.status==='failed').map(call=>{
+    const target = floors.find(item=>item.id===call.toFloorId);
+    return `- ${target ? target.name : call.toFloorId}: ${call.error || 'call failed'}`;
+  });
+  return [
+    request.note || '',
+    answers.length ? `Inter-floor call results:\n\n${answers.join('\n\n')}` : '',
+    failures.length ? `Unavailable inter-floor calls (plan conservatively around these gaps):\n${failures.join('\n')}` : ''
+  ].filter(Boolean).join('\n\n');
+}
+
+async function beginFloorConsultations(floor, pending, result){
+  const request = (floor.inbox || []).find(item=>item.id===pending.requestId);
+  if(!request || request.consultedAt) return false;
+  const seen = new Set();
+  const calls = (result.floor_calls || []).filter(call=>{
+    const target = floors.find(item=>item.id===call.floor_id);
+    if(!target || target.id===floor.id || target.onboardingStatus!=='ready' || !call.question || seen.has(target.id)) return false;
+    seen.add(target.id);
+    return true;
+  });
+  if(!calls.length) return false;
+  request.status = 'consulting';
+  request.consultationIds = [];
+  for(const proposed of calls){
+    const call = {
+      id:uid('floorcall'), fromFloorId:floor.id, toFloorId:proposed.floor_id,
+      requestId:request.id, initiative:pending.initiative, question:proposed.question,
+      reason:proposed.reason || '', status:'queued', queuedAt:Date.now(), result:null, error:''
+    };
+    floorCalls.push(call);
+    request.consultationIds.push(call.id);
+    const target = floors.find(item=>item.id===call.toFloorId);
+    log(`${floor.techLeadName} called ${target.techLeadName} on ${target.name} about "${pending.initiative}"`);
+  }
+  await saveAll();
+  render();
+  dispatchAllFloorCalls();
+  return true;
+}
+
+async function finishRequestConsultations(request){
+  const calls = floorCalls.filter(call=>(request.consultationIds || []).includes(call.id));
+  if(!calls.length || calls.some(call=>!['completed','failed'].includes(call.status))) return false;
+  request.status = 'queued';
+  request.consultedAt = Date.now();
+  request.startedAt = null;
+  request.lastAttemptAt = 0;
+  await saveAll();
+  return true;
+}
+
 async function dispatchFloorInbox(floorId){
   const floor = floors.find(item=>item.id===floorId);
   if(!floor || dispatchingFloors.has(floorId) || floor.onboardingStatus!=='ready') return;
   floor.inbox = Array.isArray(floor.inbox) ? floor.inbox : [];
   const request = floor.inbox[0];
+  if(request && request.status==='consulting'){
+    if(await finishRequestConsultations(request)) dispatchFloorInbox(floorId);
+    return;
+  }
   if(request && request.status==='planning' && !floorLeadBusy(floor)) return recoverFloorIntake(floor, request);
   if(floorLeadBusy(floor)) return;
   if(!request || request.failed || Date.now()-(request.lastAttemptAt || 0)<5000) return;
   dispatchingFloors.add(floorId);
   request.lastAttemptAt = Date.now();
   try{
-    const started = await requestTechLeadPlan(floor, request.initiative, request.note, {
+    const started = await requestTechLeadPlan(floor, request.initiative, floorRequestNote(request), {
       quiet:true, requestId:request.id, source:request.source
     });
     if(started){
@@ -2789,16 +2912,18 @@ async function recoverFloorIntake(floor, request){
       if(['starting','running'].includes(data.status)){
         request.startedAt = data.startedAt;
         pendingLeadPlans.set(profileId, {
-          floorId:floor.id, initiative:request.initiative, note:request.note || '',
+          floorId:floor.id, initiative:request.initiative, note:floorRequestNote(request),
           startedAt:data.startedAt, requestId:request.id, source:request.source || 'floor'
         });
       }else if(data.status==='completed' && data.result){
+        const recovered = {
+          floorId:floor.id, initiative:request.initiative, note:floorRequestNote(request),
+          startedAt:data.startedAt, requestId:request.id, source:request.source || 'floor'
+        };
+        if(await beginFloorConsultations(floor, recovered, data.result)) return;
         floor.inbox = floor.inbox.filter(item=>item.id!==request.id);
         await saveAll();
-        await applyTechLeadPlan({
-          floorId:floor.id, initiative:request.initiative, note:request.note || '',
-          startedAt:data.startedAt, requestId:request.id, source:request.source || 'floor'
-        }, data.result);
+        await applyTechLeadPlan(recovered, data.result);
       }else if(data.status==='failed' || data.status==='completed'){
         request.status = 'failed';
         request.failed = true;
@@ -2821,6 +2946,98 @@ function dispatchAllFloorInboxes(){
   for(const floor of floors) dispatchFloorInbox(floor.id);
 }
 
+function floorCallPrompt(call, target){
+  const source = floors.find(item=>item.id===call.fromFloorId) || {};
+  return [
+    `You are ${target.techLeadName}, the tech lead for the ${target.name} floor.`,
+    `${source.techLeadName || 'Another tech lead'} from the ${source.name || 'originating'} floor is calling about this cross-floor initiative: ${call.initiative}`,
+    call.reason ? `Why they need your floor: ${call.reason}` : '',
+    `Their question:\n${call.question}`,
+    techLeadSharedContext(target),
+    'Inspect your repository in read-only mode as needed. Answer only from your floor\'s domain and codebase. Identify integration constraints, contracts, risks, and relevant files that the calling floor should account for.',
+    'Do not edit files, delegate implementation, create commits, switch branches, push, or create a pull request. Return only the required structured answer.'
+  ].filter(Boolean).join('\n\n');
+}
+
+async function dispatchFloorCall(call){
+  const target = floors.find(item=>item.id===call.toFloorId);
+  if(!target || call.status!=='queued' || floorLeadBusy(target) || dispatchingFloorCalls.has(target.id)) return;
+  const profileId = `lead:${target.id}`;
+  dispatchingFloorCalls.add(target.id);
+  try{
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId, runType:'floor_call', agent:target.agent,
+        task:`Call from another floor: ${call.initiative}`,
+        prompt:floorCallPrompt(call, target), repository:floorRepository(target),
+        sessionId:target.techLeadSessionId || undefined
+      })
+    });
+    const data = await response.json();
+    if(!response.ok){
+      if(response.status!==409) throw new Error(data.error || `Agent service returned ${response.status}`);
+      return;
+    }
+    call.status = 'working';
+    call.startedAt = data.startedAt;
+    pendingFloorCalls.set(profileId, call.id);
+    await saveAll();
+    log(`${target.techLeadName} picked up a call from the ${floors.find(item=>item.id===call.fromFloorId)?.name || 'originating'} floor`);
+    render();
+  }catch(e){
+    call.status = 'failed';
+    call.error = String(e.message || e);
+    await saveAll();
+  }finally{
+    dispatchingFloorCalls.delete(target.id);
+  }
+}
+
+function dispatchAllFloorCalls(){
+  for(const call of floorCalls.filter(item=>item.status==='queued')) dispatchFloorCall(call);
+}
+
+async function syncFloorCalls(){
+  for(const call of floorCalls.filter(item=>item.status==='working')){
+    const target = floors.find(item=>item.id===call.toFloorId);
+    if(!target) continue;
+    const profileId = `lead:${target.id}`;
+    try{
+      const response = await fetch(`/api/logs?profileId=${encodeURIComponent(profileId)}&since=999999999`, { cache:'no-store' });
+      if(!response.ok) continue;
+      const data = await response.json();
+      if(data.status==='idle' || (data.startedAt && data.startedAt!==call.startedAt)){
+        call.status = 'failed';
+        call.error = 'The local service restarted or the floor session moved on before the call finished.';
+        call.completedAt = Date.now();
+        pendingFloorCalls.delete(profileId);
+        await saveAll();
+        dispatchFloorInbox(call.fromFloorId);
+        continue;
+      }
+      if(data.runType!=='floor_call' || data.startedAt!==call.startedAt) continue;
+      if(data.sessionId && target.techLeadSessionId!==data.sessionId) target.techLeadSessionId = data.sessionId;
+      if(data.status==='completed' && data.result){
+        call.status = 'completed';
+        call.result = data.result;
+        call.completedAt = Date.now();
+        pendingFloorCalls.delete(profileId);
+        log(`${target.techLeadName} sent cross-floor guidance for "${call.initiative}"`);
+        await saveAll();
+        dispatchFloorInbox(call.fromFloorId);
+      }else if(data.status==='failed' || (data.status==='completed' && !data.result)){
+        call.status = 'failed';
+        call.error = data.errorMessage || 'The floor call returned no answer.';
+        call.completedAt = Date.now();
+        pendingFloorCalls.delete(profileId);
+        await saveAll();
+        dispatchFloorInbox(call.fromFloorId);
+      }
+    }catch(e){ /* health status reports connectivity */ }
+  }
+}
+
 async function retryFloorInbox(floorId){
   const floor = floors.find(item=>item.id===floorId);
   const request = floor && (floor.inbox || []).find(item=>item.failed);
@@ -2840,7 +3057,9 @@ function floorReportPrompt(floor, report){
     `The user wants a read-only implementation report for this question:\n${report.question}`,
     report.context ? `Additional context:\n${report.context}` : '',
     techLeadSharedContext(floor),
-    'Inspect the repository deeply enough to give an evidence-based implementation recommendation. Do not modify files, install dependencies, create commits, switch branches, push, or perform the implementation.',
+    crossFloorDirectory(floor, true),
+    'Inspect this floor\'s repository deeply enough to give an evidence-based implementation recommendation. If the request names another floor or depends on its context, inspect the supplied context and that floor\'s repository path in read-only mode as needed.',
+    'Do not modify files in any repository, install dependencies, create commits, switch branches, push, or perform the implementation.',
     'Return only the required structured report with a clear executive summary, recommendation, ordered implementation steps, risks, and relevant repository files.'
   ].filter(Boolean).join('\n\n');
 }
@@ -3122,10 +3341,9 @@ async function syncLeadPlans(){
       }
       if(data.status==='completed' && data.result){
         pendingLeadPlans.delete(profileId);
-        if(floor){
-          floor.inbox = (floor.inbox || []).filter(item=>item.id!==pending.requestId);
-          await saveAll();
-        }
+        if(floor && await beginFloorConsultations(floor, pending, data.result)) continue;
+        if(floor) floor.inbox = (floor.inbox || []).filter(item=>item.id!==pending.requestId);
+        await saveAll();
         await applyTechLeadPlan(pending, data.result);
       }else if(data.status==='failed' || (data.status==='completed' && !data.result)){
         pendingLeadPlans.delete(profileId);
@@ -3454,13 +3672,8 @@ async function switchFloor(id){
 }
 
 /* reception modal */
-function populateReceptionFloors(selectedId){
-  const sel = document.getElementById('receptionFloor');
-  sel.innerHTML = floors.map(f=>`<option value="${f.id}">${escapeHtml(f.name)}${['starting','running'].includes(f.onboardingStatus) ? ' — learning codebase' : ''}</option>`).join('');
-  sel.value = selectedId || currentFloorId;
-}
 function openReceptionModal(){
-  populateReceptionFloors(currentFloorId);
+  document.getElementById('receptionAgent').value = ['claude','codex'].includes(reception.agent) ? reception.agent : 'codex';
   document.getElementById('receptionTaskName').value='';
   document.getElementById('receptionTaskNote').value='';
   document.getElementById('receptionModalBackdrop').classList.add('open');
@@ -3477,23 +3690,141 @@ function receptionNewFloor(){
   closeReceptionModal();
   openFloorModal();
 }
+function receptionPrompt(request){
+  const catalog = floors.filter(floor=>floor.onboardingStatus==='ready' && launchCommand(floor)).map(floor=>({
+    id:floor.id, name:floor.name, tech_lead:floor.techLeadName,
+    summary:floor.codebaseContext && floor.codebaseContext.summary,
+    architecture:floor.codebaseContext && floor.codebaseContext.architecture,
+    key_files:floor.codebaseContext && floor.codebaseContext.key_files
+  }));
+  return [
+    'You are Pam, reception for a software office whose floors each own one repository.',
+    `Analyze this incoming task: ${request.title}`,
+    request.note ? `User context:\n${request.note}` : '',
+    `Available onboarded floors (use exact ids):\n${JSON.stringify(catalog, null, 2)}`,
+    'Route the task to every floor whose repository must change or whose team must own a concrete workstream. Use one route for a single-floor task and multiple routes for a cross-repository task. Do not route a floor merely because it may have useful knowledge; floor leads can make read-only consultation calls during planning.',
+    'For each route, give that floor a self-contained title, scoped note, and its role in the overall task. Mention cross-floor dependencies and contracts in the note. Return only the required structured routing plan. Do not inspect repositories, edit files, or take implementation actions.'
+  ].filter(Boolean).join('\n\n');
+}
+
+async function dispatchReception(){
+  if(dispatchingReception || receptionRun) return;
+  const request = reception.inbox.find(item=>item.status==='queued');
+  if(!request) return;
+  const readyFloors = floors.filter(floor=>floor.onboardingStatus==='ready' && launchCommand(floor));
+  if(!readyFloors.length) return;
+  dispatchingReception = true;
+  try{
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profileId:'reception', runType:'reception', agent:reception.agent,
+        task:`Route ${request.title}`, prompt:receptionPrompt(request), repository:{mode:'office'}
+      })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Agent service returned ${response.status}`);
+    request.status = 'analyzing';
+    request.startedAt = data.startedAt;
+    receptionRun = request.id;
+    await saveAll();
+    log(`Pam started analyzing "${request.title}" across ${readyFloors.length} floor${readyFloors.length===1 ? '' : 's'}`);
+    render();
+  }catch(e){
+    request.status = 'failed';
+    request.error = String(e.message || e);
+    log(`Pam could not analyze "${request.title}": ${request.error}`);
+    await saveAll();
+  }finally{
+    dispatchingReception = false;
+  }
+}
+
+async function syncReception(){
+  const request = reception.inbox.find(item=>item.status==='analyzing');
+  if(!request){ receptionRun = null; dispatchReception(); return; }
+  receptionRun = request.id;
+  try{
+    const response = await fetch('/api/logs?profileId=reception&since=999999999', { cache:'no-store' });
+    if(!response.ok) return;
+    const data = await response.json();
+    if(data.status==='idle' || (data.startedAt && data.startedAt!==request.startedAt)){
+      request.status = 'failed';
+      request.error = 'The local service restarted or reception moved on before routing finished.';
+      receptionRun = null;
+      reception.inbox = reception.inbox.filter(item=>item.id!==request.id);
+      await saveAll();
+      log(`Pam could not route "${request.title}": ${request.error}`);
+      dispatchReception();
+      return;
+    }
+    if(data.runType!=='reception' || data.startedAt!==request.startedAt) return;
+    if(data.status==='completed' && data.result){
+      const routedFloorIds = new Set();
+      const routes = (data.result.routes || []).filter(route=>{
+        const valid = floors.some(floor=>floor.id===route.floor_id && floor.onboardingStatus==='ready');
+        if(!valid || routedFloorIds.has(route.floor_id)) return false;
+        routedFloorIds.add(route.floor_id);
+        return true;
+      });
+      if(!routes.length) throw new Error('Reception did not select an available floor.');
+      const routingSummary = routes.map(route=>{
+        const floor = floors.find(item=>item.id===route.floor_id);
+        return `- ${floor.name}: ${route.role}`;
+      }).join('\n');
+      const receptionInitiativeId = uid('receptioninitiative');
+      for(const route of routes){
+        const floor = floors.find(item=>item.id===route.floor_id);
+        const note = [request.note, route.note, `Reception routing rationale: ${data.result.reason}`, `Related floor routes:\n${routingSummary}`, `Cross-floor initiative: ${receptionInitiativeId}`].filter(Boolean).join('\n\n');
+        await enqueueFloorInitiative(floor, route.title || request.title, note, 'Pam');
+      }
+      request.status = 'completed';
+      request.result = data.result;
+      request.completedAt = Date.now();
+      receptionRun = null;
+      reception.inbox = reception.inbox.filter(item=>item.id!==request.id);
+      await saveAll();
+      log(`Pam routed "${request.title}" to ${routes.length} floor${routes.length===1 ? '' : 's'}`);
+      render();
+      dispatchReception();
+    }else if(data.status==='failed' || (data.status==='completed' && !data.result)){
+      request.status = 'failed';
+      request.error = data.errorMessage || 'Reception returned no routing plan.';
+      receptionRun = null;
+      reception.inbox = reception.inbox.filter(item=>item.id!==request.id);
+      await saveAll();
+      log(`Pam could not route "${request.title}": ${request.error}`);
+      dispatchReception();
+    }
+  }catch(e){
+    request.status = 'failed';
+    request.error = String(e.message || e);
+    receptionRun = null;
+    reception.inbox = reception.inbox.filter(item=>item.id!==request.id);
+    await saveAll();
+    log(`Pam could not route "${request.title}": ${request.error}`);
+  }
+}
+
 async function submitReceptionModal(){
-  const floorId = document.getElementById('receptionFloor').value;
   const title = document.getElementById('receptionTaskName').value.trim();
-  if(!title || !floorId) return;
+  if(!title) return;
   const note = document.getElementById('receptionTaskNote').value.trim();
-  const floor = floors.find(f=>f.id===floorId) || {};
-  if(!launchCommand(floor) || !floor.techLeadName){
+  const readyFloors = floors.filter(floor=>floor.onboardingStatus==='ready' && launchCommand(floor));
+  if(!readyFloors.length){
     pendingReception = { title, note };
     closeReceptionModal();
-    openFloorModal(floorId);
+    window.alert('Build and onboard at least one floor before reception can route work.');
+    openFloorModal();
     return;
   }
-  const floorName = floor.name || '';
-  currentFloorId = floorId;
+  reception.agent = document.getElementById('receptionAgent').value;
+  reception.inbox.push({ id:uid('reception'), title, note, status:'queued', queuedAt:Date.now() });
   closeReceptionModal();
-  await enqueueFloorInitiative(floor, title, note, 'Pam');
-  log(`Pam delivered "${title}" to ${floorName}`);
+  await saveAll();
+  log(`Pam received "${title}" for cross-floor analysis`);
+  render();
+  dispatchReception();
 }
 
 /* assign modal */
@@ -3648,6 +3979,9 @@ setInterval(syncChatRuns, 1500);
 setInterval(maybeStartLeadReviews, 3000);
 setInterval(dispatchAllFloorInboxes, 2000);
 setInterval(dispatchAllFloorReports, 2000);
+setInterval(dispatchAllFloorCalls, 2000);
+setInterval(syncFloorCalls, 2000);
+setInterval(syncReception, 2000);
 setInterval(checkAgentService, 15000); checkAgentService();
 
 renderTicker();

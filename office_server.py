@@ -45,10 +45,11 @@ PLAN_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["title", "note"],
+                "required": ["title", "note", "repositories"],
                 "properties": {
                     "title": {"type": "string"},
                     "note": {"type": "string"},
+                    "repositories": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
                 },
             },
         },
@@ -108,7 +109,7 @@ FLOOR_CALL_SCHEMA = {
 REVIEW_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["ready", "summary", "issues", "suggested_branch", "pr_title", "pr_body"],
+    "required": ["ready", "summary", "issues", "suggested_branch", "pr_title", "pr_body", "repositories"],
     "properties": {
         "ready": {"type": "boolean"},
         "summary": {"type": "string"},
@@ -116,6 +117,7 @@ REVIEW_SCHEMA = {
         "suggested_branch": {"type": "string"},
         "pr_title": {"type": "string"},
         "pr_body": {"type": "string"},
+        "repositories": {"type": "array", "items": {"type": "string"}, "maxItems": 100},
     },
 }
 
@@ -136,7 +138,7 @@ REPORT_SCHEMA = {
 ONBOARD_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["summary", "architecture", "conventions", "test_commands", "risk_areas", "key_files"],
+    "required": ["summary", "architecture", "conventions", "test_commands", "risk_areas", "key_files", "repositories"],
     "properties": {
         "summary": {"type": "string"},
         "architecture": {"type": "string"},
@@ -144,6 +146,24 @@ ONBOARD_SCHEMA = {
         "test_commands": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
         "risk_areas": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
         "key_files": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
+        "repositories": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "summary", "architecture", "conventions", "test_commands", "risk_areas", "key_files"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "architecture": {"type": "string"},
+                    "conventions": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+                    "test_commands": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+                    "risk_areas": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+                    "key_files": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
+                },
+            },
+        },
     },
 }
 
@@ -321,6 +341,59 @@ def existing_repo_path(spec: dict) -> Path:
     return path.resolve()
 
 
+IGNORED_CUPBOARD_DIRS = {
+    ".cache", ".idea", ".tox", ".venv", "__pycache__", "build", "dist",
+    "node_modules", "target", "vendor",
+}
+
+
+def discover_git_repositories(root: Path, max_depth: int = 6) -> list[Path]:
+    """Find Git working trees beneath a cupboard without traversing bulky generated trees."""
+    root = root.resolve()
+    found: list[Path] = []
+    for current, directory_names, _files in os.walk(root, followlinks=False):
+        path = Path(current)
+        try:
+            depth = len(path.relative_to(root).parts)
+        except ValueError:
+            continue
+        directory_names[:] = [
+            name for name in directory_names
+            if name != ".git" and name not in IGNORED_CUPBOARD_DIRS and not name.startswith(".")
+        ]
+        if (path / ".git").exists():
+            found.append(path)
+            if len(found) >= 100:
+                break
+        if depth >= max_depth:
+            directory_names[:] = []
+    return sorted(set(found), key=lambda value: str(value.relative_to(root)).lower())
+
+
+def cupboard_repositories(data: dict) -> tuple[Path, list[Path]]:
+    raw = str(data.get("path", "")).strip()
+    root = Path(raw).expanduser()
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError("A cupboard requires an existing absolute folder.")
+    root = root.resolve()
+    return root, discover_git_repositories(root)
+
+
+def cupboard_manifest(data: dict) -> dict:
+    root, repositories = cupboard_repositories(data)
+    return {
+        "path": str(root),
+        "repositories": [
+            {
+                "name": repository.name,
+                "path": str(repository),
+                "relativePath": "." if repository == root else str(repository.relative_to(root)),
+            }
+            for repository in repositories
+        ],
+    }
+
+
 def checked_command(command: list[str], cwd: Path, timeout: int = 300) -> str:
     result = subprocess.run(
         command,
@@ -337,8 +410,7 @@ def checked_command(command: list[str], cwd: Path, timeout: int = 300) -> str:
     return result.stdout.strip()
 
 
-def publish_changes(data: dict) -> dict:
-    repository = existing_repo_path(data.get("repository") or {})
+def validate_publish_details(data: dict) -> tuple[str, str, str, str, str]:
     branch = str(data.get("branch", "")).strip()
     title = str(data.get("title", "")).strip()
     body = str(data.get("body", "")).strip()
@@ -352,22 +424,65 @@ def publish_changes(data: dict) -> dict:
         raise RuntimeError("git is not installed or is not on PATH.")
     if not gh:
         raise RuntimeError("GitHub CLI (gh) is required to create the pull request.")
+    return branch, title, body, git, gh
+
+
+def preflight_publish(repository: Path, branch: str, git: str) -> None:
     status = checked_command([git, "status", "--porcelain"], repository)
     if not status:
-        raise ValueError("There are no uncommitted changes to publish.")
+        raise ValueError(f"There are no uncommitted changes to publish in {repository}.")
     current = checked_command([git, "branch", "--show-current"], repository)
     if current != branch:
         exists = subprocess.run(
             [git, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repository
         ).returncode == 0
         if exists:
-            raise ValueError(f"Local branch {branch} already exists; choose another name.")
+            raise ValueError(f"Local branch {branch} already exists in {repository}; choose another name.")
+
+
+def publish_repository(repository: Path, branch: str, title: str, body: str, git: str, gh: str) -> dict:
+    current = checked_command([git, "branch", "--show-current"], repository)
+    if current != branch:
         checked_command([git, "switch", "-c", branch], repository)
     checked_command([git, "add", "-A"], repository)
     checked_command([git, "commit", "-m", title], repository)
     checked_command([git, "push", "-u", "origin", branch], repository, timeout=900)
     pr_output = checked_command([gh, "pr", "create", "--title", title, "--body", body], repository, timeout=300)
-    return {"branch": branch, "pullRequest": pr_output.splitlines()[-1] if pr_output else "created"}
+    return {
+        "repository": str(repository), "name": repository.name, "branch": branch,
+        "pullRequest": pr_output.splitlines()[-1] if pr_output else "created",
+    }
+
+
+def publish_changes(data: dict) -> dict:
+    branch, title, body, git, gh = validate_publish_details(data)
+    repository = existing_repo_path(data.get("repository") or {})
+    preflight_publish(repository, branch, git)
+    return publish_repository(repository, branch, title, body, git, gh)
+
+
+def publish_cupboard(data: dict) -> dict:
+    branch, title, body, git, gh = validate_publish_details(data)
+    root, discovered = cupboard_repositories(data.get("cupboard") or {})
+    requested = {str(value) for value in (data.get("repositories") or []) if value}
+    dirty_repositories = [
+        repository for repository in discovered
+        if checked_command([git, "status", "--porcelain"], repository)
+    ]
+    repositories = [
+        repository for repository in dirty_repositories
+        if not requested or str(repository.relative_to(root)) in requested or str(repository) in requested
+    ]
+    unreviewed = [repository for repository in dirty_repositories if repository not in repositories]
+    if unreviewed:
+        names = ", ".join(str(repository.relative_to(root)) for repository in unreviewed)
+        raise ValueError(f"Changed cupboards were not included in the manager review: {names}.")
+    if not repositories:
+        raise ValueError("There are no uncommitted changes in the selected cupboards.")
+    for repository in repositories:
+        preflight_publish(repository, branch, git)
+    results = [publish_repository(repository, branch, title, body, git, gh) for repository in repositories]
+    return {"branch": branch, "repositories": results, "root": str(root)}
 
 
 def repository_state(data: dict) -> dict:
@@ -422,6 +537,30 @@ def repository_state(data: dict) -> dict:
         "ahead": ahead, "behind": behind, "remoteBranches": remote_branches,
         "remoteHeadMatches": remote_head_matches,
         "pushed": not dirty and (locally_pushed or remote_head_matches),
+    }
+
+
+def cupboard_state(data: dict) -> dict:
+    root, discovered = cupboard_repositories(data.get("cupboard") or {})
+    requested = {str(value) for value in (data.get("repositories") or []) if value}
+    repositories = [
+        repository for repository in discovered
+        if not requested or str(repository.relative_to(root)) in requested or str(repository) in requested
+    ]
+    states = []
+    for repository in repositories:
+        state = repository_state({"mode": "local", "path": str(repository)})
+        states.append({
+            **state,
+            "name": repository.name,
+            "path": str(repository),
+            "relativePath": "." if repository == root else str(repository.relative_to(root)),
+        })
+    return {
+        "repositories": states,
+        "dirty": any(item["dirty"] for item in states),
+        "pushed": bool(states) and all(item["pushed"] for item in states),
+        "branch": states[0]["branch"] if states and len({item["branch"] for item in states}) == 1 else None,
     }
 
 
@@ -511,6 +650,7 @@ def agent_command(
     output_path: str | None = None,
     output_schema: dict | None = None,
     session_id: str | None = None,
+    allow_non_git: bool = False,
 ) -> list[str]:
     executable = find_cli(agent)
     if not executable:
@@ -518,7 +658,7 @@ def agent_command(
     if agent == "codex":
         if session_id:
             command = [executable, "exec", "resume", "--json"]
-            if run_type == "chat":
+            if run_type == "chat" or allow_non_git:
                 command += ["--skip-git-repo-check"]
             if run_type in ("question", "review", "report", "floor_call"):
                 command += ["-c", 'sandbox_mode="read-only"']
@@ -532,7 +672,7 @@ def agent_command(
         ]
         if run_type in ("review", "chat", "question", "report", "reception", "floor_call"):
             command += ["--sandbox", "read-only"]
-            if run_type == "chat":
+            if run_type == "chat" or allow_non_git:
                 command += ["--skip-git-repo-check"]
             if run_type in ("review", "report", "reception", "floor_call"):
                 command += ["--output-schema", schema_path, "-o", output_path]
@@ -540,6 +680,8 @@ def agent_command(
             # --approve-for-me already selects the workspace-write policy and cannot be
             # combined with an explicit --sandbox value in current Codex builds.
             command += ["--approve-for-me"]
+            if allow_non_git:
+                command += ["--skip-git-repo-check"]
             if run_type in ("onboard", "plan", "orchestrate"):
                 command += ["--output-schema", schema_path, "-o", output_path]
         return command + ["-C", str(repository), prompt]
@@ -587,7 +729,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             temporary_paths += [schema_path, output_path]
         command = agent_command(
             run["agent"], repository, prompt, run["runType"], schema_path, output_path,
-            output_schema, run.get("sessionId")
+            output_schema, run.get("sessionId"), bool(repository_spec.get("allowNonGit"))
         )
         resume_note = f" · resuming {run['sessionId']}" if run.get("sessionId") else " · new session"
         append_log(run, "system", f"Starting {run['agent']} in {repository}{resume_note}")
@@ -672,6 +814,10 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
                 raise RuntimeError("Tech lead returned invalid repository context.")
             if run["runType"] in ("review", "orchestrate") and not isinstance(candidate.get("ready"), bool):
                 raise RuntimeError("Tech lead returned an invalid change review.")
+            if run["runType"] == "onboard" and not isinstance(candidate.get("repositories"), list):
+                raise RuntimeError("Tech lead returned an invalid cupboard index.")
+            if run["runType"] in ("review", "orchestrate") and not isinstance(candidate.get("repositories"), list):
+                raise RuntimeError("Tech lead returned an invalid repository review index.")
             if run["runType"] == "report" and not isinstance(candidate.get("executive_summary"), str):
                 raise RuntimeError("The employee returned an invalid report.")
             if run["runType"] == "reception" and not isinstance(candidate.get("routes"), list):
@@ -755,7 +901,7 @@ class OfficeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             self.json_response({
                 "ok": True,
-                "version": 2,
+                "version": 3,
                 "runTypes": list(SUPPORTED_RUN_TYPES),
                 "agents": {"codex": bool(find_cli("codex")), "claude": bool(find_cli("claude"))},
             })
@@ -798,8 +944,17 @@ class OfficeHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/publish":
                 self.json_response(publish_changes(data))
                 return
+            if parsed.path == "/api/publish-cupboard":
+                self.json_response(publish_cupboard(data))
+                return
             if parsed.path == "/api/repository-state":
                 self.json_response(repository_state(data))
+                return
+            if parsed.path == "/api/cupboard-state":
+                self.json_response(cupboard_state(data))
+                return
+            if parsed.path == "/api/discover-repositories":
+                self.json_response(cupboard_manifest(data))
                 return
             if parsed.path == "/api/select-directory":
                 self.json_response(select_directory(data))

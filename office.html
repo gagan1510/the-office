@@ -549,6 +549,15 @@
   .path-picker button:hover{ background:var(--working); }
   .path-picker button.icon-button{ width:38px; padding:4px; font-size:17px; line-height:1; }
   .field-note{ margin:-7px 0 12px; color:var(--ink-dim); font-size:9px; line-height:1.35; }
+  .modal label.cupboard-toggle{
+    display:flex; align-items:center; gap:9px; margin:2px 0 8px;
+    line-height:1.25; cursor:pointer;
+  }
+  .modal label.cupboard-toggle input{
+    flex:0 0 16px; width:16px; height:16px; margin:0; padding:0;
+  }
+  .cupboard-note{ margin:0 0 8px; padding-left:25px; }
+  .cupboard-discovery{ margin:0 0 4px; padding-left:25px; }
   .folder-browser-list{
     border:2px solid #000; background:#fff; min-height:180px; max-height:42vh;
     overflow:auto; margin-bottom:12px; padding:5px;
@@ -1071,6 +1080,12 @@
         <input id="localRepoPath" type="text" placeholder="Choose the repository folder">
         <button type="button" onclick="selectRepositoryFolder()" title="Browse repository folders">📁 Select</button>
       </div>
+      <label class="cupboard-toggle" for="floorHasCupboards">
+        <input id="floorHasCupboards" type="checkbox" onchange="updateCupboardField()">
+        This folder has cupboards
+      </label>
+      <div class="field-note cupboard-note" id="cupboardFieldNote">Use this when the selected folder may not be a Git repository itself and contains one or more Git repositories.</div>
+      <div class="field-note cupboard-discovery" id="cupboardDiscovery"></div>
     </div>
     <div class="field-group conditional-field" id="cloneRepoFields" hidden>
       <label for="cloneRepoUrl">Git repository URL</label>
@@ -2008,6 +2023,15 @@ function techLeadSharedContext(floor){
   const codebase = floor.codebaseContext;
   const sections = [];
   if(codebase){
+    const repositoryIndex = (codebase.repositories || []).map(repository=>[
+      `Cupboard ${repository.path}`,
+      repository.summary,
+      repository.architecture ? `Architecture: ${repository.architecture}` : '',
+      (repository.conventions || []).length ? `Conventions: ${repository.conventions.join('; ')}` : '',
+      (repository.test_commands || []).length ? `Verification: ${repository.test_commands.join('; ')}` : '',
+      (repository.risk_areas || []).length ? `Risks: ${repository.risk_areas.join('; ')}` : '',
+      (repository.key_files || []).length ? `Key files: ${repository.key_files.join(', ')}` : ''
+    ].filter(Boolean).join('\n')).join('\n\n');
     sections.push([
       'Onboarding knowledge for this repository:',
       codebase.summary,
@@ -2015,7 +2039,8 @@ function techLeadSharedContext(floor){
       (codebase.conventions || []).length ? `Conventions:\n- ${codebase.conventions.join('\n- ')}` : '',
       (codebase.test_commands || []).length ? `Known verification commands:\n- ${codebase.test_commands.join('\n- ')}` : '',
       (codebase.risk_areas || []).length ? `Risk areas:\n- ${codebase.risk_areas.join('\n- ')}` : '',
-      (codebase.key_files || []).length ? `Key files:\n- ${codebase.key_files.join('\n- ')}` : ''
+      (codebase.key_files || []).length ? `Key files:\n- ${codebase.key_files.join('\n- ')}` : '',
+      repositoryIndex ? `Per-cupboard index:\n\n${repositoryIndex}` : ''
     ].filter(Boolean).join('\n'));
   }
   const workerText = entries.map(entry=>[
@@ -2071,7 +2096,7 @@ function crossFloorDirectory(floor, detailed){
 function floorRepository(floor){
   return floor.repoMode==='clone'
     ? { mode:'clone', url:floor.cloneUrl, destination:floor.cloneDirectory }
-    : { mode:'local', path:floor.localPath };
+    : { mode:'local', path:floor.localPath, allowNonGit:!!floor.hasCupboards };
 }
 
 async function startWorkerAgent(worker, task){
@@ -2264,7 +2289,7 @@ function renderFloorTabs(){
 
 function reviewRepositoryKey(floor){
   const result = floor.reviewResult || {};
-  return [floor.id, floor.reviewSignature || '', floor.reviewTrackerId || '', result.pr_title || '', result.summary || ''].join('|');
+  return [floor.id, floor.reviewSignature || '', floor.reviewTrackerId || '', result.pr_title || '', result.summary || '', (result.repositories || []).join(',')].join('|');
 }
 
 async function reconcileReadyReview(floor){
@@ -2274,9 +2299,11 @@ async function reconcileReadyReview(floor){
   if(cached && (cached.status==='checking' || Date.now()-(cached.checkedAt || 0)<30000)) return;
   reviewRepositoryStates.set(key, { status:'checking', pushed:false, checkedAt:Date.now() });
   try{
-    const response = await fetch('/api/repository-state', {
+    const response = await fetch(floor.hasCupboards ? '/api/cupboard-state' : '/api/repository-state', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ repository:floorRepository(floor) })
+      body:JSON.stringify(floor.hasCupboards
+        ? { cupboard:{path:floor.localPath}, repositories:floor.reviewResult.repositories || [] }
+        : { repository:floorRepository(floor) })
     });
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || `Repository check returned ${response.status}`);
@@ -2319,7 +2346,8 @@ function renderManagerCard(){
   const checkingPushState = floor.reviewStatus==='ready' && floor.reviewResult && !repositoryState;
   if(checkingPushState) reconcileReadyReview(floor);
   const published = floor.reviewStatus==='published' || floor.reviewStatus==='pushed'
-    || !!(floor.reviewResult && floor.reviewResult.pullRequest) || !!(repositoryState && repositoryState.pushed);
+    || !!(floor.reviewResult && (floor.reviewResult.pullRequest || (floor.reviewResult.pullRequests || []).length))
+    || !!(repositoryState && repositoryState.pushed);
   const reviewLabel = onboarding ? 'learning codebase'
     : floor.onboardingStatus==='failed' ? 'onboarding failed'
     : published ? 'PR created'
@@ -2346,9 +2374,14 @@ function renderManagerCard(){
         : floor.reviewStatus==='failed'
           ? `<button onclick="retryLeadReview('${floor.id}')">↻ Retry review</button>`
           : `<div class="badge ${reviewClass}">${escapeHtml(reviewLabel)}</div>`;
-  const repoLabel = floor.repoMode==='clone'
+  const repoLabel = floor.hasCupboards
+    ? `${floor.localPath || 'folder not configured'} · ${(floor.cupboardRepositories || []).length} cupboards`
+    : floor.repoMode==='clone'
     ? `clone ${floor.cloneUrl || 'repository'} into ${floor.cloneDirectory || 'a directory'}`
     : (floor.localPath || 'repository path not configured');
+  const cupboardLabel = floor.hasCupboards
+    ? `indexed cupboards: ${(floor.cupboardRepositories || []).map(item=>item.relativePath).join(', ') || 'none yet'}`
+    : '';
   const nextInbox = (floor.inbox || [])[0];
   const inboxLabel = nextInbox
     ? `inbox: ${nextInbox.initiative}${queuedCount>1 ? ` (+${queuedCount-1} more)` : ''}`
@@ -2366,6 +2399,7 @@ function renderManagerCard(){
         <div class="eyebrow">${escapeHtml(roleName)} — manager &amp; tech lead</div>
         <div class="desc">owns the persistent agent session for <b style="color:var(--ink)">${escapeHtml(floorName)}</b>${agent ? ` <span class="runner-tag ${agent}">${agent}</span>` : ' · choose Claude or Codex'}, decides how work is split, delegates it, and reviews the combined result · ${taskCount} active or queued · ${fw.length} permanent employees</div>
         <div class="launch-command" title="${escapeHtml(repoLabel)}">agent workspace: ${escapeHtml(repoLabel)}</div>
+        ${cupboardLabel ? `<div class="launch-command" title="${escapeHtml(cupboardLabel)}">${escapeHtml(cupboardLabel)}</div>` : ''}
         ${inboxLabel ? `<div class="launch-command" title="${escapeHtml(inboxLabel)}">${escapeHtml(inboxLabel)}</div>` : ''}
       </div>
     </div>
@@ -2475,6 +2509,16 @@ function updateRepoFields(){
   const cloning = document.getElementById('repoMode').value === 'clone';
   document.getElementById('localRepoFields').hidden = cloning;
   document.getElementById('cloneRepoFields').hidden = !cloning;
+  if(cloning) document.getElementById('floorHasCupboards').checked = false;
+  updateCupboardField();
+}
+
+function updateCupboardField(){
+  const cupboard = document.getElementById('floorHasCupboards').checked;
+  const path = document.getElementById('localRepoPath').value.trim();
+  document.getElementById('cupboardDiscovery').textContent = cupboard
+    ? (path ? 'Repositories will be discovered and indexed when the floor is saved.' : 'Select the shared folder containing the cupboards.')
+    : '';
 }
 
 function selectLocalDirectory(title, initial, requireGit){
@@ -2564,8 +2608,21 @@ function updateCloneDestination(){
 
 async function selectRepositoryFolder(){
   const input = document.getElementById('localRepoPath');
-  const selected = await selectLocalDirectory('Select an existing Git repository', input.value, true);
-  if(selected) input.value = selected;
+  const cupboard = document.getElementById('floorHasCupboards').checked;
+  const selected = await selectLocalDirectory(
+    cupboard ? 'Select the folder that has cupboards' : 'Select an existing Git repository',
+    input.value, !cupboard
+  );
+  if(selected){ input.value = selected; updateCupboardField(); }
+}
+
+async function discoverFloorCupboards(path){
+  const response = await fetch('/api/discover-repositories', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})
+  });
+  const data = await response.json();
+  if(!response.ok) throw new Error(data.error || `Cupboard discovery returned ${response.status}`);
+  return data.repositories || [];
 }
 
 async function selectCloneParentFolder(){
@@ -2592,9 +2649,14 @@ function openFloorModal(id){
   document.getElementById('techLeadName').value = (floor && floor.techLeadName) || '';
   document.getElementById('repoMode').value = (floor && floor.repoMode) || 'local';
   document.getElementById('localRepoPath').value = (floor && floor.localPath) || '';
+  document.getElementById('floorHasCupboards').checked = !!(floor && floor.hasCupboards);
   document.getElementById('cloneRepoUrl').value = (floor && floor.cloneUrl) || '';
   document.getElementById('cloneDirectory').value = (floor && floor.cloneDirectory) || '';
   updateRepoFields();
+  if(floor && floor.hasCupboards){
+    const count = (floor.cupboardRepositories || []).length;
+    document.getElementById('cupboardDiscovery').textContent = `${count} Git ${count===1 ? 'repository' : 'repositories'} currently indexed.`;
+  }
   document.getElementById('floorModalBackdrop').classList.add('open');
   setTimeout(()=>document.getElementById('floorName').focus(),50);
 }
@@ -2609,6 +2671,7 @@ async function submitFloorModal(){
   const techLeadName = document.getElementById('techLeadName').value.trim();
   const repoMode = document.getElementById('repoMode').value;
   const localPath = document.getElementById('localRepoPath').value.trim();
+  const hasCupboards = repoMode==='local' && document.getElementById('floorHasCupboards').checked;
   const cloneUrl = document.getElementById('cloneRepoUrl').value.trim();
   const cloneDirectory = document.getElementById('cloneDirectory').value.trim();
   if(!name){ document.getElementById('floorName').focus(); return; }
@@ -2623,10 +2686,26 @@ async function submitFloorModal(){
   if(repoMode==='local' && !localPath){ document.getElementById('localRepoPath').focus(); return; }
   if(repoMode==='clone' && !cloneUrl){ document.getElementById('cloneRepoUrl').focus(); return; }
   if(repoMode==='clone' && !cloneDirectory){ document.getElementById('cloneDirectory').focus(); return; }
+  let cupboardRepositories = [];
+  if(hasCupboards){
+    const discovery = document.getElementById('cupboardDiscovery');
+    discovery.textContent = 'Discovering Git repositories…';
+    try{
+      cupboardRepositories = await discoverFloorCupboards(localPath);
+      discovery.textContent = cupboardRepositories.length
+        ? `Found ${cupboardRepositories.length} Git ${cupboardRepositories.length===1 ? 'repository' : 'repositories'}: ${cupboardRepositories.map(item=>item.relativePath).join(', ')}`
+        : 'No Git repositories found yet. The floor can still use non-Git shared context.';
+    }catch(e){
+      discovery.textContent = `Could not inspect cupboards: ${e.message || e}`;
+      return;
+    }
+  }
   const existing = floors.find(f=>f.id===editingFloorId);
   const needsOnboarding = !existing || existing.agent!==agent || existing.techLeadName!==techLeadName
     || existing.repoMode!==repoMode || existing.localPath!==localPath
-    || existing.cloneUrl!==cloneUrl || existing.cloneDirectory!==cloneDirectory;
+    || existing.cloneUrl!==cloneUrl || existing.cloneDirectory!==cloneDirectory
+    || !!existing.hasCupboards!==hasCupboards
+    || JSON.stringify(existing.cupboardRepositories || [])!==JSON.stringify(cupboardRepositories);
   const f = existing || { id: uid('f'), createdAt: Date.now() };
   if(needsOnboarding){
     f.techLeadSessionId = null;
@@ -2635,7 +2714,7 @@ async function submitFloorModal(){
     f.onboardingStartedAt = null;
     f.codebaseContext = null;
   }
-  Object.assign(f, { name, agent, techLeadName, repoMode, localPath, cloneUrl, cloneDirectory });
+  Object.assign(f, { name, agent, techLeadName, repoMode, localPath, cloneUrl, cloneDirectory, hasCupboards, cupboardRepositories });
   if(!existing) floors.push(f);
   ensureFloorStaff(f.id);
   currentFloorId = f.id;
@@ -2662,10 +2741,14 @@ function launchCommand(floor){
 }
 
 function floorOnboardingPrompt(floor){
+  const cupboards = floor.hasCupboards ? (floor.cupboardRepositories || []) : [{relativePath:'.', path:floorRepositoryPath(floor)}];
   return [
-    `You are ${floor.techLeadName}, the persistent tech lead for this repository.`,
+    `You are ${floor.techLeadName}, the persistent tech lead for this ${floor.hasCupboards ? 'floor workspace' : 'repository'}.`,
     'This is your onboarding turn. Build durable working context before any task is assigned.',
-    'Inspect the repository without modifying it. Read the repository instructions, top-level documentation, dependency and build manifests, important configuration, source layout, test layout, CI workflows, and a small number of representative implementation files. Identify architecture boundaries, coding conventions, verification commands, risky areas, and key files future workers should know.',
+    floor.hasCupboards
+      ? `This folder has cupboards. These Git repositories were discovered beneath the floor root:\n${cupboards.length ? cupboards.map(item=>`- ${item.relativePath}`).join('\n') : '- none currently'}\nIterate over every listed repository and build a separate indexed context entry using its exact relative path. Also inspect useful non-Git files at the floor root as shared context. Summarize how the repositories relate to one another at the top level.`
+      : 'The repositories array must contain exactly one entry with path "." for this repository.',
+    'Inspect without modifying anything. For every Git repository, read its repository instructions, top-level documentation, dependency and build manifests, important configuration, source layout, test layout, CI workflows, and representative implementation files. Identify architecture boundaries, coding conventions, verification commands, risky areas, and key files future workers should know.',
     'Do not edit files, install dependencies, run destructive commands, create commits, switch branches, push, or delegate implementation work. Return only the required structured repository context.'
   ].join('\n\n');
 }
@@ -2778,6 +2861,9 @@ function techLeadPrompt(floor, initiative, note){
     techLeadSharedContext(floor),
     crossFloorDirectory(floor, false),
     'Inspect the repository in read-only mode. Decide whether the work should stay with one worker or be split across multiple workers. Split into at most five independent, concrete workstreams that can be implemented concurrently with minimal overlap.',
+    floor.hasCupboards
+      ? 'For every workstream, set repositories to the exact relative cupboard paths it may edit. Employees collaborate in the same floor workspace, so divide work by clear ownership while allowing coordinated changes across cupboards. Files outside discovered Git cupboards are shared read-only context and must not be edited because they cannot be committed or published.'
+      : 'For every workstream, return repositories as ["."].',
     'If knowledge owned by another floor is genuinely required, add a targeted floor_calls entry using its exact floor id. If the user explicitly names another floor or asks to use a detail, contract, decision, or context from it, you must request a call to that floor unless the exact requested information is already present in the supplied cross-floor directory. Combine related questions into one call per floor. Otherwise do not request unnecessary calls.',
     'Other floor repositories are context-only here. Do not plan edits outside this floor; reception must route implementation to every repository that needs changes.',
     'Return the required structured decision, rationale, workstreams, and floor_calls. Do not modify files.'
@@ -3303,11 +3389,15 @@ async function applyTechLeadPlan(pending, result){
   const tracker = {
     id:uid('initiative'), initiative:pending.initiative, createdAt:Date.now(),
     assignments:[], completedTaskIds:[], sharedSession:true,
-    managerNote:pending.note || '', planResult:result
+    managerNote:pending.note || '', planResult:result,
+    repositories:[...new Set(assignedStreams.flatMap(stream=>stream.repositories || []))]
   };
   floor.multiInitiatives = [...(floor.multiInitiatives || []).slice(-9), tracker];
   for(const stream of assignedStreams){
-    const taskNote = [`Initiative: ${pending.initiative}`, pending.note, result.reason, stream.note].filter(Boolean).join('\n\n');
+    const taskNote = [
+      `Initiative: ${pending.initiative}`, pending.note, result.reason, stream.note,
+      (stream.repositories || []).length ? `Cupboards assigned to this workstream:\n- ${stream.repositories.join('\n- ')}` : ''
+    ].filter(Boolean).join('\n\n');
     const assigned = await assignTask(floor.id, stream.title, taskNote, {
       initiative:pending.initiative,
       initiativeId:tracker.id,
@@ -3319,7 +3409,8 @@ async function applyTechLeadPlan(pending, result){
       taskId:assigned.task.id,
       title:assigned.task.title,
       workerId:assigned.worker.id,
-      workerName:assigned.worker.name
+      workerName:assigned.worker.name,
+      repositories:stream.repositories || []
     });
   }
   await saveAll();
@@ -3404,7 +3495,7 @@ function completedMultiWorkerInitiative(floor){
 function techLeadOrchestrationPrompt(floor, pending, result, tracker){
   const assignments = tracker.assignments.map((assignment, index)=>{
     const stream = (result.workstreams || [])[index] || {};
-    return `${index+1}. ${assignment.workerName}: ${assignment.title}${stream.note ? `\n   ${stream.note}` : ''}`;
+    return `${index+1}. ${assignment.workerName}: ${assignment.title}${assignment.repositories.length ? ` [${assignment.repositories.join(', ')}]` : ''}${stream.note ? `\n   ${stream.note}` : ''}`;
   }).join('\n');
   return [
     `Continue as ${floor.techLeadName}, the tech lead. Keep all coordination in this existing session.`,
@@ -3413,8 +3504,8 @@ function techLeadOrchestrationPrompt(floor, pending, result, tracker){
     `Approved workstreams:\n${assignments}`,
     techLeadSharedContext(floor),
     'You are the coordinator and reviewer, not an implementation worker. Do not edit implementation files yourself. Use the CLI\'s native subagent/agent delegation tools to spawn one worker for each workstream. Give each worker clear file ownership, let independent workers run concurrently, monitor them, and wait for every worker to finish. If integration repairs are needed, delegate those repairs to a worker as well.',
-    'After all delegated workers finish, inspect the combined Git diff and test results. Review integration correctness, overlapping edits, regressions, and missing tests. Do not commit, switch branches, push, or create a pull request.',
-    'Return the required structured review. Set ready to true only when the combined changes are safe to publish. If ready, suggest a concise unused branch name, PR title, and PR body. Put every blocking concern in issues.'
+    'After all delegated workers finish, inspect the combined Git diff in every changed cupboard and the test results. Review integration correctness, overlapping edits, regressions, and missing tests. Do not commit, switch branches, push, or create a pull request.',
+    'Return the required structured review and list every changed cupboard by exact relative path in repositories. Set ready to true only when the combined changes are safe to publish. If ready, suggest one concise task-specific branch name to use consistently in every changed repository, plus the PR title and body. A read-only .git directory in this review run is expected and must never be reported as a blocking issue.'
   ].filter(Boolean).join('\n\n');
 }
 
@@ -3467,8 +3558,8 @@ function techLeadReviewPrompt(floor, group){
     `Multiple workers have completed parts of this initiative: ${group.initiative}`,
     `Assignments:\n${assignments}`,
     techLeadSharedContext(floor),
-    'Inspect the combined uncommitted Git changes and relevant tests in read-only mode. Review integration correctness, overlapping edits, regressions, missing tests, and whether the changes form one coherent pull request. Do not edit files, create commits, switch branches, push, or create a pull request.',
-    'Return the required structured review. Set ready to true only when the combined changes are safe to publish. If ready, suggest a concise unused branch name, PR title, and PR body. Put every blocking concern in issues.'
+    'Inspect the combined uncommitted Git changes in every changed cupboard and relevant tests in read-only mode. Review integration correctness, overlapping edits, regressions, missing tests, and whether the changes form a coherent set of pull requests. Do not edit files, create commits, switch branches, push, or create a pull request.',
+    'Return the required structured review and list every changed cupboard by exact relative path in repositories. Set ready to true only when the combined changes are safe to publish. If ready, suggest one concise task-specific branch name for all changed repositories, plus the PR title and body. A read-only .git directory in this review run is expected and must never be reported as a blocking issue.'
   ].join('\n\n');
 }
 
@@ -3607,14 +3698,18 @@ function openReviewModal(floorId){
   issueBox.hidden = issues.length===0;
   issueBox.textContent = issues.length ? 'Blocking issues:\n- '+issues.join('\n- ') : '';
   const published = floor.reviewStatus==='published' || floor.reviewStatus==='pushed'
-    || !!result.pullRequest;
+    || !!result.pullRequest || !!(result.pullRequests || []).length;
   document.getElementById('reviewPublishFields').hidden = !result.ready || published;
   document.getElementById('reviewBranch').value = result.suggested_branch || '';
   document.getElementById('reviewPrTitle').value = result.pr_title || '';
   document.getElementById('reviewPrBody').value = result.pr_body || '';
+  const reviewedRepositories = (result.repositories || []).filter(Boolean);
   document.getElementById('reviewPublishStatus').textContent = published
-    ? (result.pullRequest ? `Pull request created: ${result.pullRequest}` : 'These changes are already pushed.')
-    : result.ready ? 'Waiting for your approval.' : 'Publishing is disabled until the blocking issues are resolved and reviewed again.';
+    ? (result.pullRequest ? `Pull request created: ${result.pullRequest}`
+      : (result.pullRequests || []).length ? `Pull requests created:\n${result.pullRequests.join('\n')}` : 'These changes are already pushed.')
+    : floor.hasCupboards && reviewedRepositories.length
+      ? `Waiting for approval to publish ${reviewedRepositories.length} cupboard${reviewedRepositories.length===1 ? '' : 's'}: ${reviewedRepositories.join(', ')}`
+      : result.ready ? 'Waiting for your approval.' : 'Publishing is disabled until the blocking issues are resolved and reviewed again.';
   const button = document.getElementById('publishReviewButton');
   button.hidden = !result.ready || published;
   button.disabled = false;
@@ -3637,26 +3732,36 @@ async function publishReviewedChanges(){
     return;
   }
   const repo = floor.repoMode==='clone' ? floor.cloneDirectory : floor.localPath;
-  const confirmed = window.confirm(`Publish all current changes in ${repo}?\n\nThis will create/switch to branch "${branch}", stage all changes, commit, push to origin, and create a GitHub pull request.`);
+  const repositories = (floor.reviewResult.repositories || []).filter(Boolean);
+  const targetText = floor.hasCupboards
+    ? `${repositories.length || 'all changed'} cupboards under ${repo}${repositories.length ? `:\n- ${repositories.join('\n- ')}` : ''}`
+    : repo;
+  const confirmed = window.confirm(`Publish all reviewed changes in ${targetText}?\n\nThis will use task branch "${branch}" in every affected repository, stage and commit its changes, push each branch, and create one GitHub pull request per repository.`);
   if(!confirmed) return;
   const button = document.getElementById('publishReviewButton');
   const status = document.getElementById('reviewPublishStatus');
   button.disabled = true;
   status.textContent = 'Creating branch, commit, push, and pull request…';
   try{
-    const response = await fetch('/api/publish', {
+    const response = await fetch(floor.hasCupboards ? '/api/publish-cupboard' : '/api/publish', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ repository:floorRepository(floor), branch, title, body })
+      body:JSON.stringify(floor.hasCupboards
+        ? { cupboard:{path:floor.localPath}, repositories, branch, title, body }
+        : { repository:floorRepository(floor), branch, title, body })
     });
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || `Publish returned ${response.status}`);
     floor.reviewStatus = 'published';
-    floor.reviewResult.pullRequest = data.pullRequest;
+    if(floor.hasCupboards) floor.reviewResult.pullRequests = (data.repositories || []).map(item=>item.pullRequest);
+    else floor.reviewResult.pullRequest = data.pullRequest;
     const tracker = floor.reviewTrackerId && (floor.multiInitiatives || []).find(item=>item.id===floor.reviewTrackerId);
     if(tracker) tracker.reviewStatus = 'published';
     await saveAll();
-    status.textContent = `Created ${data.pullRequest}`;
-    log(`Published ${data.branch} and created pull request ${data.pullRequest}`);
+    const created = floor.hasCupboards
+      ? (data.repositories || []).map(item=>`${item.name}: ${item.pullRequest}`).join('\n')
+      : data.pullRequest;
+    status.textContent = `Created ${created}`;
+    log(`Published ${data.branch} and created ${floor.hasCupboards ? (data.repositories || []).length+' pull requests' : 'pull request '+data.pullRequest}`);
     render();
   }catch(e){
     status.textContent = `Publish stopped: ${e.message || e}`;

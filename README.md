@@ -10,8 +10,10 @@ The application runs entirely on your computer. The Python server listens only o
 
 - Choose Claude or Codex independently for each floor.
 - Onboard an existing local Git repository with the built-in folder browser.
+- Build a floor from a non-Git folder that has multiple Git repository "cupboards."
 - Clone a Git repository into a selected local directory.
 - Build repository context before accepting implementation work.
+- Index architecture, conventions, tests, risks, and key files separately for every cupboard during onboarding.
 - Keep one persistent Manager & Tech Lead session per floor.
 - Give every floor a stable team of five named employees who are reused across tasks.
 - Let reception analyze an incoming task and route scoped work to every repository floor it requires.
@@ -112,10 +114,11 @@ Claude normally uses the authentication available to the local CLI. If an inheri
 4. Enter the Manager & Tech Lead's display name. The supplied name is used throughout the interface and activity history.
 5. Choose one repository setup:
    - **Existing repository:** browse to a local folder containing `.git`.
+   - **Folder with cupboards:** choose **This folder has cupboards**, then select a folder that may not itself be a Git repository. The office discovers Git repositories beneath it.
    - **Clone repository:** enter a Git URL and choose the parent destination folder.
 6. Save the floor.
 
-The selected agent first inspects the repository in a read-only onboarding run. It records a structured summary of the architecture, conventions, test commands, risk areas, and important files. Tasks remain unavailable until onboarding succeeds.
+The selected agent first performs a read-only onboarding run. For an ordinary floor it records one repository context. For a cupboard floor it iterates over every discovered Git repository and records a path-keyed context entry containing architecture, conventions, test commands, risk areas, and important files, plus a floor-wide summary of how the cupboards relate. Useful non-Git files at the selected root are shared read-only context. Tasks remain unavailable until onboarding succeeds.
 
 ## Work lifecycle
 
@@ -136,11 +139,11 @@ Worker delegation inside the shared floor session
    ↓
 Worker desks return to the available pool
    ↓
-Combined diff and test review
+Combined diff and test review across every changed cupboard
    ↓
 User chooses whether to publish
    ↓
-Branch push and GitHub pull request
+One task branch per changed repository, followed by one GitHub pull request per repository
 ```
 
 The Manager & Tech Lead coordinates and reviews; it does not take implementation work directly. For multi-worker tasks, it assigns distinct workstreams, waits for the workers, and reviews their combined result.
@@ -153,7 +156,7 @@ Each lead also receives a directory of the other onboarded floors, including the
 
 If a lead session is already planning, consulting, orchestrating, reviewing, answering a question, or recovering after a refresh, new work stays visibly queued and is dispatched in order when the session becomes available. Worker desks are released after implementation completes; user approval, merging, and publishing do not keep them occupied.
 
-Nothing is pushed automatically. The publish action shows the proposed branch, commit/PR title, and PR body, then asks for confirmation before it changes branches, stages files, commits, pushes, or invokes `gh pr create`.
+Employees on a floor collaborate in the same workspace rather than using separate employee branches. Each workstream declares the cupboard paths it owns. Nothing is pushed automatically. After combined review, the publish action shows the changed cupboards and one task-specific branch name, then asks once for confirmation. The local service creates that branch independently in every changed repository, stages and commits each repository, pushes each branch, and invokes `gh pr create` once per repository. If a changed cupboard was omitted from the manager's review, publishing stops instead of silently including or ignoring it.
 
 ## Repository push detection
 

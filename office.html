@@ -1209,21 +1209,23 @@
 </div>
 
 <script>
-// Use the host's persistent storage when supplied (for example, an artifact host).
-// Otherwise use browser localStorage, with an in-memory fallback for restricted previews.
+// SQLite on the local Office server is authoritative. Host/browser storage remains
+// as a migration source and emergency local backup.
 const hostStorage = window.storage && typeof window.storage.get === 'function' && typeof window.storage.set === 'function'
   ? window.storage
   : null;
 const memoryStorage = new Map();
-let storageMode = hostStorage ? 'host storage' : 'browser storage';
-const officeStorage = {
+let storageMode = 'initializing';
+let serverStateRevision = null;
+let stateWriteQueue = Promise.resolve();
+let storageWarningShown = false;
+const fallbackStorage = {
   async get(key){
     if(hostStorage) return hostStorage.get(key, false);
     try{
       const value = window.localStorage.getItem('office:'+key);
       return value===null ? null : { key, value, shared:false };
     }catch(e){
-      storageMode = 'session only';
       return memoryStorage.has(key) ? { key, value:memoryStorage.get(key), shared:false } : null;
     }
   },
@@ -1233,7 +1235,6 @@ const officeStorage = {
       window.localStorage.setItem('office:'+key, value);
       return { key, value, shared:false };
     }catch(e){
-      storageMode = 'session only';
       memoryStorage.set(key, value);
       return { key, value, shared:false };
     }
@@ -1242,6 +1243,68 @@ const officeStorage = {
 
 const STORAGE_KEY = 'task-office-data-v2';
 const LEGACY_KEY_V1 = 'task-office-data';
+async function writeServerState(value, expectedRevision){
+  const state = JSON.parse(value);
+  const response = await fetch('/api/state', {
+    method:'PUT', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ expectedRevision, state })
+  });
+  const data = await response.json();
+  if(!response.ok){
+    const error = new Error(data.error || `State storage returned ${response.status}`);
+    error.stateConflict = response.status===409;
+    throw error;
+  }
+  serverStateRevision = data.revision;
+  storageMode = 'SQLite database';
+  await fallbackStorage.set(STORAGE_KEY, value);
+  return { key:STORAGE_KEY, value, revision:data.revision, shared:true };
+}
+const officeStorage = {
+  async get(key){
+    if(key!==STORAGE_KEY) return fallbackStorage.get(key);
+    try{
+      const response = await fetch('/api/state', { cache:'no-store' });
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error || `State storage returned ${response.status}`);
+      serverStateRevision = data.revision || 0;
+      storageMode = 'SQLite database';
+      if(data.exists){
+        const value = JSON.stringify(data.state);
+        await fallbackStorage.set(key, value);
+        return { key, value, revision:serverStateRevision, shared:true };
+      }
+      const local = await fallbackStorage.get(key);
+      if(!local) return null;
+      const imported = await writeServerState(local.value, 0);
+      storageMode = 'SQLite database · browser data imported';
+      return imported;
+    }catch(e){
+      storageMode = 'browser fallback · server unavailable';
+      return fallbackStorage.get(key);
+    }
+  },
+  async set(key, value){
+    if(key!==STORAGE_KEY) return fallbackStorage.set(key, value);
+    const operation = stateWriteQueue.then(async()=>{
+      if(serverStateRevision===null){
+        await fallbackStorage.set(key, value);
+        storageMode = 'browser fallback · server unavailable';
+        return { key, value, shared:false };
+      }
+      try{
+        return await writeServerState(value, serverStateRevision);
+      }catch(e){
+        await fallbackStorage.set(key, value);
+        storageMode = e.stateConflict ? 'storage conflict · reload required' : 'browser backup · database save failed';
+        throw e;
+      }
+    });
+    stateWriteQueue = operation.catch(()=>{});
+    return operation;
+  }
+};
+
 const MAX_WORKERS = 5;
 // Pam owns reception; the user-named manager and tech lead owns each floor's shared agent session.
 // The regular desk pool contains independently named workers.
@@ -1490,6 +1553,10 @@ async function saveAll(){
     await officeStorage.set(STORAGE_KEY, JSON.stringify({ schemaVersion:6, floors, workers, officeChat, reception, floorCalls, currentFloorId }));
   }catch(e){
     console.error('save failed', e);
+    if(!storageWarningShown){
+      storageWarningShown = true;
+      window.alert(`${e.message || e}\n\nYour latest state is still in the browser backup. Reload after resolving the storage conflict or restarting the local service.`);
+    }
   }
 }
 
@@ -2005,7 +2072,11 @@ async function checkAgentService(){
     const ready = Object.entries(data.agents).filter(([,ok])=>ok).map(([name])=>name);
     const missing = Object.entries(data.agents).filter(([,ok])=>!ok).map(([name])=>name);
     el.className = 'service-status online';
-    el.textContent = `ready: ${ready.join(', ') || 'no agents'}${missing.length ? ' · missing: '+missing.join(', ') : ''}`;
+    if(data.storage && data.storage.mode==='sqlite' && serverStateRevision!==null
+      && !storageMode.includes('conflict') && !storageMode.includes('failed')){
+      storageMode = 'SQLite database';
+    }
+    el.textContent = `ready: ${ready.join(', ') || 'no agents'}${missing.length ? ' · missing: '+missing.join(', ') : ''} · state: ${storageMode}`;
   }catch(e){
     el.className = 'service-status offline';
     el.textContent = 'agent service offline — run office_server.py';
@@ -4207,10 +4278,10 @@ setInterval(dispatchAllFloorReports, 2000);
 setInterval(dispatchAllFloorCalls, 2000);
 setInterval(syncFloorCalls, 2000);
 setInterval(syncReception, 2000);
-setInterval(checkAgentService, 15000); checkAgentService();
+setInterval(checkAgentService, 15000);
 
 renderTicker();
-loadAll();
+loadAll().then(checkAgentService);
 </script>
 </body>
 </html>

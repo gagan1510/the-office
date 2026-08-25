@@ -32,7 +32,7 @@ The application runs entirely on your computer. The Python server listens only o
 - Review combined changes before publishing.
 - Push a branch and create a GitHub pull request only after explicit confirmation.
 - Detect manually pushed work across all floors and hide stale publish controls.
-- Store floors, chat history, session IDs, and office state in browser `localStorage`.
+- Persist floors, chat history, session IDs, task history, agent runs, and logs in a local SQLite database.
 
 ## Requirements
 
@@ -104,6 +104,15 @@ python3 office_server.py
 ```
 
 The server prints the detected Claude and Codex paths at startup.
+
+Office data is stored by default at `~/.local/share/the-office/office.db`. To use another location:
+
+```sh
+export TASK_OFFICE_DATA_DIR=/absolute/path/to/office-data
+python3 office_server.py
+```
+
+Set `TASK_OFFICE_RUN_HISTORY` to change the number of retained agent runs; the default is 200 and the minimum is 20.
 
 Claude normally uses the authentication available to the local CLI. If an inherited `ANTHROPIC_API_KEY` is rejected, the office retries once using the user's local Claude login. Codex Chat Room sessions are allowed to run from the non-Git application directory and remain read-only.
 
@@ -198,20 +207,36 @@ Click the Manager & Tech Lead or a worker profile to see the actual local CLI ac
 
 Employee desks also show the latest activity inferred from structured Claude/Codex events. File-write tools appear as **Editing code**, common test commands appear as **Running tests**, and read, build, review, delegation, and command activity use their own labels and colors. When a CLI exposes only the shared orchestration session rather than individual subagent identities, assigned employees display that shared session's currently observed phase.
 
-The server holds live process output in memory, with up to 5,000 entries per profile. Restarting the server clears those in-memory logs, although browser-persisted floor and session metadata remains available.
+The server keeps live process output in memory and persists the latest 5,000 log entries for every retained run in SQLite. Restarting the server marks unfinished runs as interrupted, while their metadata and logs remain available from the profile activity view. By default, the latest 200 runs are retained.
 
 ## Persistence
 
-Office configuration and conversation state are stored under the browser origin in `localStorage`. This includes:
+Office configuration and conversation state are stored in a server-managed SQLite database. This includes:
 
 - floor and repository configuration;
 - selected agent and lead name;
 - worker/task state;
 - onboarding and review context;
 - Claude/Codex session IDs; and
-- Chat Room history.
+- Chat Room history;
+- recent task timing history; and
+- retained agent run metadata and logs.
 
-Use the same browser profile and server address to retain state. Changing the port creates a different browser origin and therefore a different `localStorage` namespace. Clearing site data removes the saved office state but does not modify any repository.
+The database is independent of browser profile and server port. On the first launch after upgrading, an empty database automatically imports the existing state from browser storage. The browser copy is retained and refreshed after successful database saves as an emergency fallback; SQLite is authoritative after migration.
+
+State saves are atomic and revision-checked so a stale browser tab cannot silently overwrite newer state. If two tabs conflict, reload the stale tab. The server retains a pre-write snapshot at most once every five minutes and keeps the latest 20 snapshots. Server startup also creates a full SQLite backup and keeps the latest 10 in:
+
+```text
+~/.local/share/the-office/backups/
+```
+
+With a custom `TASK_OFFICE_DATA_DIR`, the `backups` folder is created inside that directory. Export the current logical state as JSON with:
+
+```sh
+curl -s http://127.0.0.1:8765/api/state/export > office-state.json
+```
+
+SQLite contains local repository paths, prompts, conversations, and agent session IDs. The data directory is created with user-only permissions and should not be committed to Git or placed in a publicly synchronized folder.
 
 ## Troubleshooting
 
@@ -259,6 +284,14 @@ The repository must have an `origin` remote that the current user can push to, a
 
 New runs return a concise failure reason directly in chat. Click the relevant profile to inspect the complete local CLI log when more detail is needed.
 
+### The UI reports a storage conflict
+
+Another browser tab saved a newer state revision. Reload the stale tab instead of retrying the write. Its latest unsaved view remains in that tab's browser backup.
+
+### The SQLite database cannot be opened
+
+Confirm the directory printed beside `Storage:` when the server starts exists and is writable by the current user. If `TASK_OFFICE_DATA_DIR` is configured, it must point to a writable local directory.
+
 ## Security and deployment model
 
 The office is designed as a personal local application, not a public web service:
@@ -267,7 +300,7 @@ The office is designed as a personal local application, not a public web service
 - Agent processes inherit the local user's filesystem permissions and selected CLI environment.
 - Implementation agents may edit files in onboarded repositories.
 - Publishing can stage all current repository changes and push them after confirmation.
-- Browser state may contain repository paths, prompts, task descriptions, and session IDs.
+- The SQLite database and browser fallback may contain repository paths, prompts, task descriptions, logs, and session IDs.
 
 Do not expose the server directly to a LAN or the public internet. A multi-user deployment would require authentication, authorization, per-user process isolation, encrypted server-side persistence, CSRF protection, audit controls, and strict repository access boundaries.
 
@@ -276,10 +309,17 @@ Do not expose the server directly to a LAN or the public internet. A multi-user 
 ```text
 office.html       Single-page interface, office state, and workflow orchestration
 office_server.py  Local HTTP service, CLI execution, Git operations, and logs
+test_office_server.py  SQLite persistence and state API tests
 requirements.txt Python dependency declaration (standard library only)
 README.md         Setup and operating documentation
 .gitignore        Local Python, editor, secret, log, and OS exclusions
 assets/           Screenshots and other README media
+```
+
+Run the storage and API tests with:
+
+```sh
+python3 -m unittest -v test_office_server.py
 ```
 
 ## Stopping the server

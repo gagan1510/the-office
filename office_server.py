@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -22,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 1_000_000
+MAX_STATE_BODY = 20_000_000
 SUPPORTED_RUN_TYPES = (
     "work", "chat", "question", "onboard", "plan", "review", "orchestrate",
     "report", "reception", "floor_call",
@@ -30,6 +32,208 @@ MAX_LOG_LINES = 5000
 lock = threading.RLock()
 clone_lock = threading.Lock()
 runs: dict[str, dict] = {}
+database_lock = threading.RLock()
+database: sqlite3.Connection | None = None
+
+
+def office_data_directory() -> Path:
+    override = os.environ.get("TASK_OFFICE_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
+    root = Path(xdg_data).expanduser() if xdg_data else Path.home() / ".local" / "share"
+    return (root / "the-office").resolve()
+
+
+DATA_DIRECTORY = office_data_directory()
+DATABASE_PATH = DATA_DIRECTORY / "office.db"
+MAX_RUN_HISTORY = max(20, int(os.environ.get("TASK_OFFICE_RUN_HISTORY", "200")))
+
+
+class StateConflictError(ValueError):
+    pass
+
+
+def initialize_database() -> None:
+    global database
+    DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    try:
+        DATA_DIRECTORY.chmod(0o700)
+    except OSError:
+        pass
+    existed = DATABASE_PATH.exists() and DATABASE_PATH.stat().st_size > 0
+    connection = sqlite3.connect(DATABASE_PATH, timeout=10, check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute("PRAGMA synchronous=NORMAL")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS office_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            schema_version INTEGER NOT NULL,
+            revision INTEGER NOT NULL,
+            state_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS state_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            revision INTEGER NOT NULL,
+            schema_version INTEGER NOT NULL,
+            state_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            task TEXT NOT NULL,
+            run_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            returncode INTEGER,
+            result_json TEXT,
+            session_id TEXT,
+            final_message TEXT,
+            error_message TEXT,
+            activity_phase TEXT,
+            activity_label TEXT,
+            activity_updated_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS agent_runs_profile_started
+            ON agent_runs(profile_id, started_at DESC);
+        CREATE TABLE IF NOT EXISTS run_logs (
+            run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL,
+            time INTEGER NOT NULL,
+            stream TEXT NOT NULL,
+            text TEXT NOT NULL,
+            PRIMARY KEY (run_id, sequence)
+        );
+        """
+    )
+    try:
+        DATABASE_PATH.chmod(0o600)
+    except OSError:
+        pass
+    with database_lock:
+        database = connection
+        interrupted_at = now_ms()
+        connection.execute(
+            """UPDATE agent_runs
+               SET status = 'interrupted', ended_at = COALESCE(ended_at, ?),
+                   error_message = COALESCE(error_message, 'The Office server restarted before this run finished.'),
+                   activity_phase = 'failed', activity_label = 'Interrupted by server restart',
+                   activity_updated_at = ?
+               WHERE status IN ('starting', 'running')""",
+            (interrupted_at, interrupted_at),
+        )
+        connection.commit()
+    if existed:
+        create_database_backup()
+
+
+def require_database() -> sqlite3.Connection:
+    if database is None:
+        raise RuntimeError("The Office database is not initialized.")
+    return database
+
+
+def create_database_backup() -> Path:
+    backup_directory = DATA_DIRECTORY / "backups"
+    backup_directory.mkdir(parents=True, exist_ok=True)
+    try:
+        backup_directory.chmod(0o700)
+    except OSError:
+        pass
+    backup_path = backup_directory / f"office-{time.strftime('%Y%m%d-%H%M%S')}-{now_ms()%1000:03d}.db"
+    with database_lock:
+        source = require_database()
+        target = sqlite3.connect(backup_path)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    backups = sorted(backup_directory.glob("office-*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for stale in backups[10:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    return backup_path
+
+
+def read_office_state() -> dict:
+    with database_lock:
+        row = require_database().execute(
+            "SELECT schema_version, revision, state_json, updated_at FROM office_state WHERE singleton = 1"
+        ).fetchone()
+    if not row:
+        return {"exists": False, "revision": 0, "state": None, "updatedAt": None}
+    return {
+        "exists": True,
+        "schemaVersion": row["schema_version"],
+        "revision": row["revision"],
+        "state": json.loads(row["state_json"]),
+        "updatedAt": row["updated_at"],
+    }
+
+
+def write_office_state(payload: dict) -> dict:
+    state = payload.get("state")
+    if not isinstance(state, dict):
+        raise ValueError("State must be a JSON object.")
+    schema_version = state.get("schemaVersion")
+    if not isinstance(schema_version, int) or schema_version < 1:
+        raise ValueError("State must include a valid schemaVersion.")
+    expected_revision = payload.get("expectedRevision", 0)
+    if not isinstance(expected_revision, int) or expected_revision < 0:
+        raise ValueError("expectedRevision must be a non-negative integer.")
+    encoded = json.dumps(state, separators=(",", ":"), ensure_ascii=False)
+    if len(encoded.encode()) > MAX_STATE_BODY:
+        raise ValueError("Office state is too large to store.")
+    updated_at = now_ms()
+    with database_lock:
+        connection = require_database()
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            current = connection.execute(
+                "SELECT schema_version, revision, state_json, updated_at FROM office_state WHERE singleton = 1"
+            ).fetchone()
+            current_revision = current["revision"] if current else 0
+            if expected_revision != current_revision:
+                raise StateConflictError(
+                    f"Office state changed in another tab (expected revision {expected_revision}, current revision {current_revision})."
+                )
+            last_snapshot = connection.execute(
+                "SELECT MAX(created_at) AS created_at FROM state_snapshots"
+            ).fetchone()["created_at"]
+            if current and (last_snapshot is None or updated_at - last_snapshot >= 300_000):
+                connection.execute(
+                    "INSERT INTO state_snapshots(revision, schema_version, state_json, created_at) VALUES (?, ?, ?, ?)",
+                    (current["revision"], current["schema_version"], current["state_json"], updated_at),
+                )
+                connection.execute(
+                    "DELETE FROM state_snapshots WHERE id NOT IN (SELECT id FROM state_snapshots ORDER BY id DESC LIMIT 20)"
+                )
+            revision = current_revision + 1
+            connection.execute(
+                """INSERT INTO office_state(singleton, schema_version, revision, state_json, updated_at)
+                   VALUES (1, ?, ?, ?, ?)
+                   ON CONFLICT(singleton) DO UPDATE SET
+                       schema_version=excluded.schema_version,
+                       revision=excluded.revision,
+                       state_json=excluded.state_json,
+                       updated_at=excluded.updated_at""",
+                (schema_version, revision, encoded, updated_at),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"ok": True, "revision": revision, "schemaVersion": schema_version, "updatedAt": updated_at}
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -208,15 +412,138 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def persist_run_started(run: dict) -> None:
+    if database is None:
+        return
+    with database_lock:
+        connection = require_database()
+        cursor = connection.execute(
+            """INSERT INTO agent_runs(
+                   profile_id, agent, task, run_type, status, started_at, session_id,
+                   activity_phase, activity_label, activity_updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run["profileId"], run["agent"], run["task"], run["runType"], run["status"],
+                run["startedAt"], run.get("sessionId"), run.get("activityPhase"),
+                run.get("activityLabel"), run.get("activityUpdatedAt"),
+            ),
+        )
+        run["databaseRunId"] = cursor.lastrowid
+        connection.execute(
+            "DELETE FROM agent_runs WHERE id NOT IN (SELECT id FROM agent_runs ORDER BY started_at DESC LIMIT ?)",
+            (MAX_RUN_HISTORY,),
+        )
+        connection.commit()
+
+
+def persist_run_log(run: dict, entry: dict) -> None:
+    run_id = run.get("databaseRunId")
+    if database is None or not run_id:
+        return
+    with database_lock:
+        connection = require_database()
+        connection.execute(
+            "INSERT OR REPLACE INTO run_logs(run_id, sequence, time, stream, text) VALUES (?, ?, ?, ?, ?)",
+            (run_id, entry["sequence"], entry["time"], entry["stream"], entry["text"]),
+        )
+        connection.execute(
+            "DELETE FROM run_logs WHERE run_id=? AND sequence<=?",
+            (run_id, entry["sequence"] - MAX_LOG_LINES),
+        )
+        connection.commit()
+
+
+def persist_run_status(run: dict) -> None:
+    run_id = run.get("databaseRunId")
+    if database is None or not run_id:
+        return
+    result = json.dumps(run.get("result"), ensure_ascii=False) if run.get("result") is not None else None
+    with database_lock:
+        connection = require_database()
+        connection.execute(
+            """UPDATE agent_runs SET
+                   status=?, ended_at=?, returncode=?, result_json=?, session_id=?,
+                   final_message=?, error_message=?, activity_phase=?, activity_label=?, activity_updated_at=?
+               WHERE id=?""",
+            (
+                run["status"], run.get("endedAt"), run.get("returncode"), result,
+                run.get("sessionId"), run.get("finalMessage"), run.get("errorMessage"),
+                run.get("activityPhase"), run.get("activityLabel"), run.get("activityUpdatedAt"), run_id,
+            ),
+        )
+        connection.commit()
+
+
+def persisted_run(profile_id: str, since: int = 0) -> dict | None:
+    with database_lock:
+        connection = require_database()
+        row = connection.execute(
+            "SELECT * FROM agent_runs WHERE profile_id=? ORDER BY started_at DESC LIMIT 1",
+            (profile_id,),
+        ).fetchone()
+        if not row:
+            return None
+        log_rows = connection.execute(
+            "SELECT sequence, time, stream, text FROM run_logs WHERE run_id=? AND sequence>? ORDER BY sequence",
+            (row["id"], since),
+        ).fetchall()
+        sequence_row = connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_logs WHERE run_id=?",
+            (row["id"],),
+        ).fetchone()
+    return {
+        "profileId": row["profile_id"],
+        "agent": row["agent"],
+        "task": row["task"],
+        "status": "failed" if row["status"] == "interrupted" else row["status"],
+        "persistedStatus": row["status"],
+        "pid": None,
+        "startedAt": row["started_at"],
+        "endedAt": row["ended_at"],
+        "returncode": row["returncode"],
+        "runType": row["run_type"],
+        "result": json.loads(row["result_json"]) if row["result_json"] else None,
+        "sessionId": row["session_id"],
+        "finalMessage": row["final_message"],
+        "errorMessage": row["error_message"],
+        "activityPhase": row["activity_phase"] or "idle",
+        "activityLabel": row["activity_label"] or "Available",
+        "activityUpdatedAt": row["activity_updated_at"],
+        "logs": [dict(item) for item in log_rows],
+        "sequence": sequence_row["sequence"],
+        "persisted": True,
+    }
+
+
+def persisted_run_history(limit: int = 50) -> dict:
+    limit = max(1, min(limit, 200))
+    with database_lock:
+        rows = require_database().execute(
+            """SELECT id, profile_id, agent, task, run_type, status, started_at, ended_at,
+                      returncode, session_id, error_message
+               FROM agent_runs ORDER BY started_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return {"runs": [{
+        "id": row["id"], "profileId": row["profile_id"], "agent": row["agent"],
+        "task": row["task"], "runType": row["run_type"], "status": row["status"],
+        "startedAt": row["started_at"], "endedAt": row["ended_at"],
+        "returncode": row["returncode"], "sessionId": row["session_id"],
+        "errorMessage": row["error_message"],
+    } for row in rows]}
+
+
 def append_log(run: dict, stream: str, text: str) -> None:
     with lock:
         run["sequence"] += 1
-        run["logs"].append({
+        entry = {
             "sequence": run["sequence"],
             "time": now_ms(),
             "stream": stream,
             "text": text.rstrip("\n"),
-        })
+        }
+        run["logs"].append(entry)
+    persist_run_log(run, entry)
 
 
 def set_activity(run: dict, phase: str, label: str) -> None:
@@ -873,6 +1200,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             run["process"] = None
         set_activity(run, "failed", "Agent stopped with an error")
     finally:
+        persist_run_status(run)
         for temporary_path in temporary_paths:
             try:
                 os.unlink(temporary_path)
@@ -919,9 +1247,9 @@ class OfficeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def request_json(self) -> dict:
+    def request_json(self, max_body: int = MAX_BODY) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0 or length > MAX_BODY:
+        if length <= 0 or length > max_body:
             raise ValueError("Invalid request size.")
         return json.loads(self.rfile.read(length))
 
@@ -930,10 +1258,22 @@ class OfficeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             self.json_response({
                 "ok": True,
-                "version": 3,
+                "version": 4,
                 "runTypes": list(SUPPORTED_RUN_TYPES),
                 "agents": {"codex": bool(find_cli("codex")), "claude": bool(find_cli("claude"))},
+                "storage": {"mode": "sqlite", "path": str(DATABASE_PATH)},
             })
+            return
+        if parsed.path in ("/api/state", "/api/state/export"):
+            self.json_response(read_office_state())
+            return
+        if parsed.path == "/api/runs":
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get("limit", ["50"])[0])
+            except ValueError:
+                limit = 50
+            self.json_response(persisted_run_history(limit))
             return
         if parsed.path == "/api/logs":
             query = parse_qs(parsed.query)
@@ -944,7 +1284,8 @@ class OfficeHandler(BaseHTTPRequestHandler):
                 since = 0
             with lock:
                 run = runs.get(profile_id)
-            self.json_response(public_run(run, since) if run else {
+            historical = None if run else persisted_run(profile_id, since)
+            self.json_response(public_run(run, since) if run else historical or {
                 "profileId": profile_id, "status": "idle", "logs": [], "sequence": 0
             })
             return
@@ -992,6 +1333,23 @@ class OfficeHandler(BaseHTTPRequestHandler):
                 self.json_response(browse_directory(data))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
+        except StateConflictError as exc:
+            self.json_response({"error": str(exc), **read_office_state()}, HTTPStatus.CONFLICT)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.json_response({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def do_PUT(self) -> None:
+        parsed = urlparse(self.path)
+        try:
+            if parsed.path != "/api/state":
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            data = self.request_json(MAX_STATE_BODY)
+            self.json_response(write_office_state(data))
+        except StateConflictError as exc:
+            self.json_response({"error": str(exc), **read_office_state()}, HTTPStatus.CONFLICT)
         except (ValueError, json.JSONDecodeError) as exc:
             self.json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -1040,9 +1398,11 @@ class OfficeHandler(BaseHTTPRequestHandler):
                 "sequence": 0,
             }
             runs[profile_id] = run
+        persist_run_started(run)
         append_log(run, "system", f"Queued task: {task}")
         with lock:
             run["status"] = "running"
+        persist_run_status(run)
         threading.Thread(target=run_agent, args=(run, repository, prompt), daemon=True).start()
         self.json_response(public_run(run), HTTPStatus.ACCEPTED)
 
@@ -1065,8 +1425,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Serve The Office and run local Claude/Codex agents.")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    initialize_database()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), OfficeHandler)
     print(f"the office: http://127.0.0.1:{args.port}")
+    print(f"Storage: {DATABASE_PATH}")
     print(f"Codex: {find_cli('codex') or 'not found'}")
     print(f"Claude: {find_cli('claude') or 'not found'}")
     try:

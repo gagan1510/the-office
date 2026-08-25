@@ -188,6 +188,20 @@
   .manager-card button.secondary{ background:var(--panel-light); color:var(--ink); }
   .manager-card.combined-role-card{ border-left-color:var(--lead); }
   .manager-card.combined-role-card .manager-info .eyebrow{ color:var(--lead-dark); }
+  .task-history-card{
+    background:var(--panel); border:3px solid #000; padding:12px 14px;
+    box-shadow:inset 2px 2px 0 rgba(255,255,255,.4), inset -2px -2px 0 rgba(0,0,0,.3);
+  }
+  .floor-right-col > .task-history-card{ width:100%; }
+  .task-history-head{ display:flex; justify-content:space-between; gap:10px; align-items:baseline; margin-bottom:8px; }
+  .task-history-title{ font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:var(--lead-dark); }
+  .task-history-average{ font-size:9px; color:var(--ink-dim); }
+  .task-history-list{ display:flex; flex-direction:column; gap:6px; }
+  .task-history-item{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 10px; align-items:center; }
+  .task-history-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10.5px; font-weight:700; }
+  .task-history-duration{ font-size:10px; font-weight:800; color:var(--working-dark); }
+  .task-history-time{ grid-column:1/-1; color:var(--ink-dim); font-size:8.5px; }
+  .task-history-empty{ color:var(--ink-dim); font-size:10px; line-height:1.45; }
   .runner-tag{ display:inline-block; border:2px solid #000; padding:1px 5px; margin-left:4px; color:#fff; text-transform:uppercase; }
   .runner-tag.claude{ background:#B8643E; }
   .runner-tag.codex{ background:#246B5A; }
@@ -246,7 +260,7 @@
     --floor-sidebar-width: 460px;
     display: flex;
     gap: 14px;
-    align-items: flex-start;
+    align-items: stretch;
     justify-content: center;
     margin-bottom: 16px;
   }
@@ -314,7 +328,10 @@
     gap: 14px;
   }
   .floor-left-col #leadQuestionSection {
-    height: 420px;
+    height: auto;
+    min-height: 420px;
+    flex: 1 1 420px;
+    margin-bottom: 0;
     max-height: none;
     display: flex;
     flex-direction: column;
@@ -714,6 +731,8 @@
   .manager-card{ border-left:8px solid var(--manager); margin-bottom:0; }
   .manager-card.combined-role-card{ border-left-color:var(--lead); }
   .manager-card.combined-role-card .manager-info .eyebrow{ color:var(--lead-dark); text-transform:none; }
+  .task-history-card{ border:2px solid var(--line); border-left:8px solid var(--working); box-shadow:var(--shadow); background:var(--panel-light); }
+  .task-history-item{ padding:6px 8px; border:1px solid #C5BAAA; background:#FFFDF8; }
   .lead-card{ border-left:8px solid var(--lead); }
   .reception-info .desc,.manager-info .desc,.lead-info .desc{ line-height:1.5; }
   .lead-icon{ border:2px solid var(--line); box-shadow:var(--shadow-small); }
@@ -894,6 +913,8 @@
     }
     .floor-left-col #leadQuestionSection {
       height: auto;
+      min-height: 0;
+      flex: none;
       overflow: visible;
     }
   }
@@ -988,6 +1009,7 @@
         <div class="plant tl"><div class="pot"></div><div class="leaf l1"></div><div class="leaf l2"></div><div class="leaf l3"></div></div>
         <div class="plant br"><div class="pot"></div><div class="leaf l1"></div><div class="leaf l2"></div><div class="leaf l3"></div></div>
       </div>
+      <section class="task-history-card" id="taskHistoryCard" aria-labelledby="taskHistoryTitle"></section>
     </div>
   </div>
   </div>
@@ -1022,13 +1044,15 @@
     <div class="review-summary" id="reviewSummary"></div>
     <div class="review-issues" id="reviewIssues" hidden></div>
     <div id="reviewPublishFields">
-      <label for="reviewBranch">Branch</label>
+      <label for="reviewBranch">Source / task branch</label>
       <input id="reviewBranch" type="text" maxlength="180">
+      <label for="reviewDestinationBranch">Destination branch</label>
+      <input id="reviewDestinationBranch" type="text" maxlength="180" placeholder="e.g. main">
       <label for="reviewPrTitle">Commit and pull-request title</label>
       <input id="reviewPrTitle" type="text" maxlength="240">
       <label for="reviewPrBody">Pull-request description</label>
       <textarea id="reviewPrBody"></textarea>
-      <div class="publish-warning">Nothing is published automatically. Continuing will create or switch to this branch, stage all repository changes, commit them, push to origin, and create a GitHub pull request.</div>
+      <div class="publish-warning">Nothing is published automatically. Continuing will create or switch to the source branch, stage all repository changes, commit them, push to origin, and create a GitHub pull request into the destination branch.</div>
     </div>
     <div class="publish-status" id="reviewPublishStatus"></div>
     <div class="modal-actions">
@@ -1353,6 +1377,45 @@ function timeAgo(ts){
   if(h<24) return h+'h ago';
   return Math.floor(h/24)+'d ago';
 }
+function formatDuration(milliseconds){
+  const totalSeconds = Math.max(0, Math.round(Number(milliseconds || 0)/1000));
+  if(totalSeconds<60) return totalSeconds+'s';
+  const minutes = Math.floor(totalSeconds/60);
+  const seconds = totalSeconds%60;
+  if(minutes<60) return minutes+'m'+(seconds ? ' '+seconds+'s' : '');
+  const hours = Math.floor(minutes/60);
+  const remainingMinutes = minutes%60;
+  if(hours<24) return hours+'h'+(remainingMinutes ? ' '+remainingMinutes+'m' : '');
+  const days = Math.floor(hours/24);
+  const remainingHours = hours%24;
+  return days+'d'+(remainingHours ? ' '+remainingHours+'h' : '');
+}
+
+function backfillFloorTaskHistory(floor){
+  const existing = Array.isArray(floor.taskHistory) ? floor.taskHistory : [];
+  const existingIds = new Set(existing.map(item=>item && item.id).filter(Boolean));
+  const recovered = (floor.multiInitiatives || []).filter(tracker=>{
+    return tracker && tracker.id && tracker.createdAt && tracker.releasedAt
+      && ['ready','published','pushed'].includes(tracker.reviewStatus)
+      && !existingIds.has(String(tracker.id));
+  }).map(tracker=>{
+    const startedAt = Number(tracker.startedAt || tracker.createdAt);
+    const completedAt = Number(tracker.completedAt || tracker.releasedAt);
+    return {
+      id:String(tracker.id),
+      title:tracker.initiative || 'Untitled task',
+      startedAt,
+      completedAt,
+      durationMs:Math.max(0, completedAt-startedAt),
+      approximate:!tracker.startedAt || !tracker.completedAt
+    };
+  });
+  if(!recovered.length) return false;
+  floor.taskHistory = [...existing, ...recovered]
+    .sort((a,b)=>Number(b.completedAt || 0)-Number(a.completedAt || 0))
+    .slice(0,20);
+  return true;
+}
 
 async function loadAll(){
   try{
@@ -1378,9 +1441,12 @@ async function loadAll(){
     const f = { id: uid('f'), name:'general', createdAt: Date.now() };
     floors = [f]; currentFloorId = f.id;
   }
-  let staffAdded = false;
-  for(const floor of floors) staffAdded = ensureFloorStaff(floor.id) || staffAdded;
-  if(staffAdded) await saveAll();
+  let stateUpdated = false;
+  for(const floor of floors){
+    stateUpdated = ensureFloorStaff(floor.id) || stateUpdated;
+    stateUpdated = backfillFloorTaskHistory(floor) || stateUpdated;
+  }
+  if(stateUpdated) await saveAll();
   render();
 }
 
@@ -1421,7 +1487,7 @@ async function migrateFromV1(){
 
 async function saveAll(){
   try{
-    await officeStorage.set(STORAGE_KEY, JSON.stringify({ schemaVersion:5, floors, workers, officeChat, reception, floorCalls, currentFloorId }));
+    await officeStorage.set(STORAGE_KEY, JSON.stringify({ schemaVersion:6, floors, workers, officeChat, reception, floorCalls, currentFloorId }));
   }catch(e){
     console.error('save failed', e);
   }
@@ -2203,6 +2269,7 @@ function render(){
   renderFloorTabs();
   reconcileAllReadyReviews();
   renderManagerCard();
+  renderTaskHistory();
   renderChatPanels();
   renderReportCenter();
 
@@ -2409,6 +2476,32 @@ function renderManagerCard(){
       <button class="secondary" onclick="openFloorModal('${floor.id}')">⚙ Configure</button>
       <button onclick="openAssignModal()" ${onboarding ? 'disabled title="The agent is learning the codebase"' : ''}>＋ Assign work</button>
     </div>
+  `;
+}
+
+function renderTaskHistory(){
+  const floor = floors.find(item=>item.id===currentFloorId) || {};
+  const history = (Array.isArray(floor.taskHistory) ? floor.taskHistory : [])
+    .filter(item=>item && item.completedAt && Number(item.durationMs)>=0)
+    .sort((a,b)=>b.completedAt-a.completedAt)
+    .slice(0,5);
+  const card = document.getElementById('taskHistoryCard');
+  if(!card) return;
+  const average = history.length
+    ? history.reduce((sum,item)=>sum+Number(item.durationMs || 0),0)/history.length
+    : 0;
+  card.innerHTML = `
+    <div class="task-history-head">
+      <div class="task-history-title" id="taskHistoryTitle">Recent task times</div>
+      ${history.length ? `<div class="task-history-average">average ${formatDuration(average)}</div>` : ''}
+    </div>
+    ${history.length ? `<div class="task-history-list">${history.map(item=>`
+      <div class="task-history-item" title="${item.approximate ? 'Approximate from retained task timestamps · ' : ''}Started ${escapeHtml(new Date(item.startedAt).toLocaleString())} · approved ${escapeHtml(new Date(item.completedAt).toLocaleString())}">
+        <div class="task-history-name">${escapeHtml(item.title || 'Untitled task')}</div>
+        <div class="task-history-duration">${formatDuration(item.durationMs)}</div>
+        <div class="task-history-time">approved ${timeAgo(item.completedAt)}</div>
+      </div>`).join('')}</div>`
+      : '<div class="task-history-empty">Completed floor tasks will appear here after their combined review is approved.</div>'}
   `;
 }
 
@@ -2979,6 +3072,8 @@ async function dispatchFloorInbox(floorId){
       const pending = pendingLeadPlans.get(`lead:${floor.id}`);
       request.status = 'planning';
       request.startedAt = pending && pending.startedAt;
+      request.taskStartedAt = request.taskStartedAt || request.startedAt || Date.now();
+      if(pending) pending.taskStartedAt = request.taskStartedAt;
       await saveAll();
       render();
     }
@@ -2997,14 +3092,17 @@ async function recoverFloorIntake(floor, request){
     if(data.runType==='plan' && (!request.startedAt || data.startedAt===request.startedAt)){
       if(['starting','running'].includes(data.status)){
         request.startedAt = data.startedAt;
+        request.taskStartedAt = request.taskStartedAt || data.startedAt || Date.now();
         pendingLeadPlans.set(profileId, {
           floorId:floor.id, initiative:request.initiative, note:floorRequestNote(request),
-          startedAt:data.startedAt, requestId:request.id, source:request.source || 'floor'
+          startedAt:data.startedAt, taskStartedAt:request.taskStartedAt,
+          requestId:request.id, source:request.source || 'floor'
         });
       }else if(data.status==='completed' && data.result){
         const recovered = {
           floorId:floor.id, initiative:request.initiative, note:floorRequestNote(request),
-          startedAt:data.startedAt, requestId:request.id, source:request.source || 'floor'
+          startedAt:data.startedAt, taskStartedAt:request.taskStartedAt || data.startedAt || Date.now(),
+          requestId:request.id, source:request.source || 'floor'
         };
         if(await beginFloorConsultations(floor, recovered, data.result)) return;
         floor.inbox = floor.inbox.filter(item=>item.id!==request.id);
@@ -3388,6 +3486,7 @@ async function applyTechLeadPlan(pending, result){
   const assignedStreams = useMultiple ? streams : [streams[0] || { title:pending.initiative, note:'' }];
   const tracker = {
     id:uid('initiative'), initiative:pending.initiative, createdAt:Date.now(),
+    startedAt:pending.taskStartedAt || pending.startedAt || Date.now(),
     assignments:[], completedTaskIds:[], sharedSession:true,
     managerNote:pending.note || '', planResult:result,
     repositories:[...new Set(assignedStreams.flatMap(stream=>stream.repositories || []))]
@@ -3669,6 +3768,7 @@ async function syncLeadReviews(){
             }].slice(-100);
           }
         }
+        if(data.result.ready) recordFloorTaskCompletion(floor, pending, tracker);
         await saveAll();
         log(`${floor.techLeadName} ${data.result.ready ? 'approved' : 'requested changes to'} the combined work for "${pending.initiative}"`);
         render();
@@ -3686,6 +3786,24 @@ async function syncLeadReviews(){
   }
 }
 
+function recordFloorTaskCompletion(floor, pending, tracker){
+  const completedAt = Date.now();
+  const preciseStartedAt = (tracker && tracker.startedAt) || pending.taskStartedAt;
+  const startedAt = Number(preciseStartedAt || (tracker && tracker.createdAt) || pending.startedAt || completedAt);
+  const taskId = String((tracker && tracker.id) || pending.trackerId || pending.signature || pending.initiative);
+  floor.taskHistory = Array.isArray(floor.taskHistory) ? floor.taskHistory : [];
+  if(floor.taskHistory.some(item=>item.id===taskId)) return;
+  floor.taskHistory = [{
+    id:taskId,
+    title:pending.initiative || (tracker && tracker.initiative) || 'Untitled task',
+    startedAt,
+    completedAt,
+    durationMs:Math.max(0, completedAt-startedAt),
+    approximate:!preciseStartedAt
+  }, ...floor.taskHistory].slice(0,20);
+  if(tracker) tracker.completedAt = completedAt;
+}
+
 function openReviewModal(floorId){
   const floor = floors.find(f=>f.id===floorId);
   if(!floor || !floor.reviewResult) return;
@@ -3701,6 +3819,7 @@ function openReviewModal(floorId){
     || !!result.pullRequest || !!(result.pullRequests || []).length;
   document.getElementById('reviewPublishFields').hidden = !result.ready || published;
   document.getElementById('reviewBranch').value = result.suggested_branch || '';
+  document.getElementById('reviewDestinationBranch').value = result.destination_branch || '';
   document.getElementById('reviewPrTitle').value = result.pr_title || '';
   document.getElementById('reviewPrBody').value = result.pr_body || '';
   const reviewedRepositories = (result.repositories || []).filter(Boolean);
@@ -3725,10 +3844,11 @@ async function publishReviewedChanges(){
   const floor = floors.find(f=>f.id===reviewingFloorId);
   if(!floor || !floor.reviewResult || !floor.reviewResult.ready) return;
   const branch = document.getElementById('reviewBranch').value.trim();
+  const destinationBranch = document.getElementById('reviewDestinationBranch').value.trim();
   const title = document.getElementById('reviewPrTitle').value.trim();
   const body = document.getElementById('reviewPrBody').value.trim();
-  if(!branch || !title){
-    document.getElementById('reviewPublishStatus').textContent = 'Branch and title are required.';
+  if(!branch || !destinationBranch || !title){
+    document.getElementById('reviewPublishStatus').textContent = 'Source branch, destination branch, and title are required.';
     return;
   }
   const repo = floor.repoMode==='clone' ? floor.cloneDirectory : floor.localPath;
@@ -3736,7 +3856,7 @@ async function publishReviewedChanges(){
   const targetText = floor.hasCupboards
     ? `${repositories.length || 'all changed'} cupboards under ${repo}${repositories.length ? `:\n- ${repositories.join('\n- ')}` : ''}`
     : repo;
-  const confirmed = window.confirm(`Publish all reviewed changes in ${targetText}?\n\nThis will use task branch "${branch}" in every affected repository, stage and commit its changes, push each branch, and create one GitHub pull request per repository.`);
+  const confirmed = window.confirm(`Publish all reviewed changes in ${targetText}?\n\nThis will use task branch "${branch}" in every affected repository, stage and commit its changes, push each branch, and create one GitHub pull request into "${destinationBranch}" per repository.`);
   if(!confirmed) return;
   const button = document.getElementById('publishReviewButton');
   const status = document.getElementById('reviewPublishStatus');
@@ -3746,8 +3866,8 @@ async function publishReviewedChanges(){
     const response = await fetch(floor.hasCupboards ? '/api/publish-cupboard' : '/api/publish', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify(floor.hasCupboards
-        ? { cupboard:{path:floor.localPath}, repositories, branch, title, body }
-        : { repository:floorRepository(floor), branch, title, body })
+        ? { cupboard:{path:floor.localPath}, repositories, branch, destinationBranch, title, body }
+        : { repository:floorRepository(floor), branch, destinationBranch, title, body })
     });
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || `Publish returned ${response.status}`);

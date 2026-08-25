@@ -25,6 +25,7 @@ The application runs entirely on your computer. The Python server listens only o
 - Return workers to the available pool as soon as implementation finishes.
 - View human-readable, live CLI activity by clicking a profile or worker.
 - See live employee phases such as reading code, editing files, running tests, building, reviewing, and coordinating delegated work.
+- See the five most recent completion times and their average on every floor.
 - Ask the floor lead questions about the onboarded codebase.
 - Request read-only implementation reports researched by one available employee.
 - Use the separate Chat Room for ordinary Claude or Codex conversations.
@@ -156,7 +157,9 @@ Each lead also receives a directory of the other onboarded floors, including the
 
 If a lead session is already planning, consulting, orchestrating, reviewing, answering a question, or recovering after a refresh, new work stays visibly queued and is dispatched in order when the session becomes available. Worker desks are released after implementation completes; user approval, merging, and publishing do not keep them occupied.
 
-Employees on a floor collaborate in the same workspace rather than using separate employee branches. Each workstream declares the cupboard paths it owns. Nothing is pushed automatically. After combined review, the publish action shows the changed cupboards and one task-specific branch name, then asks once for confirmation. The local service creates that branch independently in every changed repository, stages and commits each repository, pushes each branch, and invokes `gh pr create` once per repository. If a changed cupboard was omitted from the manager's review, publishing stops instead of silently including or ignoring it.
+Each floor keeps a browser-persisted history of its 20 most recent approved tasks and shows the latest five with their average. Elapsed time starts when the Manager & Tech Lead first begins analyzing the task and ends when the combined change review is approved; time waiting in the floor inbox and time waiting for publication are excluded. Existing retained task trackers are backfilled where possible and marked as approximate in the row tooltip when their older timestamps are less precise.
+
+Employees on a floor collaborate in the same workspace rather than using separate employee branches. Each workstream declares the cupboard paths it owns. Nothing is pushed automatically. After combined review, the publish action shows the changed cupboards and asks for both a task-specific source branch and the destination branch, then asks once for confirmation. The local service creates the source branch independently in every changed repository, stages and commits each repository, pushes each branch, and invokes `gh pr create --base <destination-branch>` once per repository. If a changed cupboard was omitted from the manager's review, publishing stops instead of silently including or ignoring it.
 
 ## Repository push detection
 

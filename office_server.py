@@ -410,21 +410,34 @@ def checked_command(command: list[str], cwd: Path, timeout: int = 300) -> str:
     return result.stdout.strip()
 
 
-def validate_publish_details(data: dict) -> tuple[str, str, str, str, str]:
+def valid_branch_name(branch: str) -> bool:
+    return bool(
+        branch
+        and len(branch) <= 180
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch)
+        and ".." not in branch
+        and not branch.endswith("/")
+    )
+
+
+def validate_publish_details(data: dict) -> tuple[str, str, str, str, str, str]:
     branch = str(data.get("branch", "")).strip()
+    destination_branch = str(data.get("destinationBranch", "")).strip()
     title = str(data.get("title", "")).strip()
     body = str(data.get("body", "")).strip()
-    if not branch or len(branch) > 180 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch):
-        raise ValueError("Enter a valid branch name.")
-    if ".." in branch or branch.endswith("/") or not title or len(title) > 240 or len(body) > 50_000:
-        raise ValueError("Invalid branch or pull-request details.")
+    if not valid_branch_name(branch):
+        raise ValueError("Enter a valid source branch name.")
+    if not valid_branch_name(destination_branch):
+        raise ValueError("Enter a valid destination branch name.")
+    if not title or len(title) > 240 or len(body) > 50_000:
+        raise ValueError("Invalid pull-request details.")
     git = shutil.which("git")
     gh = find_cli("gh")
     if not git:
         raise RuntimeError("git is not installed or is not on PATH.")
     if not gh:
         raise RuntimeError("GitHub CLI (gh) is required to create the pull request.")
-    return branch, title, body, git, gh
+    return branch, destination_branch, title, body, git, gh
 
 
 def preflight_publish(repository: Path, branch: str, git: str) -> None:
@@ -440,29 +453,37 @@ def preflight_publish(repository: Path, branch: str, git: str) -> None:
             raise ValueError(f"Local branch {branch} already exists in {repository}; choose another name.")
 
 
-def publish_repository(repository: Path, branch: str, title: str, body: str, git: str, gh: str) -> dict:
+def publish_repository(
+    repository: Path, branch: str, destination_branch: str,
+    title: str, body: str, git: str, gh: str,
+) -> dict:
     current = checked_command([git, "branch", "--show-current"], repository)
     if current != branch:
         checked_command([git, "switch", "-c", branch], repository)
     checked_command([git, "add", "-A"], repository)
     checked_command([git, "commit", "-m", title], repository)
     checked_command([git, "push", "-u", "origin", branch], repository, timeout=900)
-    pr_output = checked_command([gh, "pr", "create", "--title", title, "--body", body], repository, timeout=300)
+    pr_output = checked_command(
+        [gh, "pr", "create", "--base", destination_branch, "--title", title, "--body", body],
+        repository,
+        timeout=300,
+    )
     return {
         "repository": str(repository), "name": repository.name, "branch": branch,
+        "destinationBranch": destination_branch,
         "pullRequest": pr_output.splitlines()[-1] if pr_output else "created",
     }
 
 
 def publish_changes(data: dict) -> dict:
-    branch, title, body, git, gh = validate_publish_details(data)
+    branch, destination_branch, title, body, git, gh = validate_publish_details(data)
     repository = existing_repo_path(data.get("repository") or {})
     preflight_publish(repository, branch, git)
-    return publish_repository(repository, branch, title, body, git, gh)
+    return publish_repository(repository, branch, destination_branch, title, body, git, gh)
 
 
 def publish_cupboard(data: dict) -> dict:
-    branch, title, body, git, gh = validate_publish_details(data)
+    branch, destination_branch, title, body, git, gh = validate_publish_details(data)
     root, discovered = cupboard_repositories(data.get("cupboard") or {})
     requested = {str(value) for value in (data.get("repositories") or []) if value}
     dirty_repositories = [
@@ -481,8 +502,16 @@ def publish_cupboard(data: dict) -> dict:
         raise ValueError("There are no uncommitted changes in the selected cupboards.")
     for repository in repositories:
         preflight_publish(repository, branch, git)
-    results = [publish_repository(repository, branch, title, body, git, gh) for repository in repositories]
-    return {"branch": branch, "repositories": results, "root": str(root)}
+    results = [
+        publish_repository(repository, branch, destination_branch, title, body, git, gh)
+        for repository in repositories
+    ]
+    return {
+        "branch": branch,
+        "destinationBranch": destination_branch,
+        "repositories": results,
+        "root": str(root),
+    }
 
 
 def repository_state(data: dict) -> dict:

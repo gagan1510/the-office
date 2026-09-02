@@ -1,0 +1,10 @@
+[
+  {"id":"terraform","signals":[".tf","terraform"],"name":"Terraform tooling","access":"Reads infrastructure configuration; enabling an MCP may also allow cloud or state access."},
+  {"id":"postgresql","signals":["postgres","psycopg","pgx"],"name":"PostgreSQL MCP","access":"Can read or modify databases using the credentials supplied to the server."},
+  {"id":"kafka","signals":["kafka","kafka-topics"],"name":"Kafka tooling","access":"May inspect or publish messages using locally configured broker credentials."},
+  {"id":"kubernetes","signals":["kubernetes","k8s","helm"],"name":"Kubernetes tooling","access":"May inspect or modify resources in the active cluster context."},
+  {"id":"aws","signals":["boto3","aws-sdk","@aws-sdk"],"name":"AWS tooling","access":"May access AWS APIs using local or configured credentials."},
+  {"id":"docker","signals":["dockerfile","docker-compose","compose.yaml"],"name":"Container tooling","access":"May build images or control the local container daemon."},
+  {"id":"stripe","signals":["stripe"],"name":"Stripe tooling","access":"May access payment data or perform API operations with supplied credentials."},
+  {"id":"github","signals":["octokit","github.com","actions/"],"name":"GitHub tooling","access":"May read or change repositories, issues, pull requests, or workflows."}
+]

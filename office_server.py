@@ -1051,6 +1051,25 @@ def looks_like_git_url(raw: str) -> bool:
     return bool(GIT_URL_HOST_PATTERN.search(raw))
 
 
+def suggested_clone_destination(raw: str) -> str:
+    """Return a safe conventional destination for a URL-only floor request."""
+    source = raw.strip().rstrip("/")
+    if re.match(r"^[\w.-]+@[\w.-]+:", source):
+        source = source.split(":", 1)[1]
+    else:
+        source = urlparse(source if re.match(r"^\w+://", source) else f"https://{source}").path
+    name = Path(source).name
+    if name.lower().endswith(".git"):
+        name = name[:-4]
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-") or "repository"
+    destination = Path.home() / name
+    suffix = 2
+    while destination.exists() and not (destination / ".git").exists():
+        destination = Path.home() / f"{name}-{suffix}"
+        suffix += 1
+    return str(destination.resolve())
+
+
 def resolve_floor_intent(raw_path_or_url: str) -> dict:
     """Deterministically resolve a floor-intent path/URL fragment to a repo shape.
 
@@ -1061,7 +1080,11 @@ def resolve_floor_intent(raw_path_or_url: str) -> dict:
     if not raw:
         return {"mode": "unresolved", "raw": raw, "summary": "No path or URL was mentioned."}
     if looks_like_git_url(raw):
-        return {"mode": "clone", "raw": raw, "url": raw, "summary": f"Clone `{raw}`"}
+        return {
+            "mode": "clone", "raw": raw, "url": raw,
+            "suggested_destination": suggested_clone_destination(raw),
+            "summary": f"Clone `{raw}`",
+        }
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = Path.cwd() / path
@@ -1096,6 +1119,9 @@ def floor_intent_resolution(data: dict) -> dict:
     Handles the 10.5 multi-floor case: a single prompt may name several floors, so the
     response is always an array of resolved entries, one per floor in the input list.
     """
+    unresolved = data.get("unresolved")
+    if unresolved is not None and not isinstance(unresolved, str):
+        raise ValueError("unresolved must be a string or null.")
     floors = data.get("floors")
     if not isinstance(floors, list) or not floors:
         raise ValueError("floors must be a non-empty list.")
@@ -1106,14 +1132,22 @@ def floor_intent_resolution(data: dict) -> dict:
         if not isinstance(item, dict):
             raise ValueError("Each floor entry must be an object.")
         raw = item.get("raw_path_or_url")
+        if not isinstance(raw, str):
+            raise ValueError("Each floor entry needs a raw_path_or_url string.")
+        agent = item.get("agent")
+        if agent not in (None, "claude", "codex"):
+            raise ValueError("Each floor agent must be claude, codex, or null.")
+        for field in ("lead_name", "floor_name"):
+            if item.get(field) is not None and not isinstance(item.get(field), str):
+                raise ValueError(f"Each floor {field} must be a string or null.")
         resolved.append({
             "raw_path_or_url": raw,
-            "agent": item.get("agent"),
+            "agent": agent,
             "lead_name": item.get("lead_name"),
             "floor_name": item.get("floor_name"),
             "resolution": resolve_floor_intent(str(raw) if raw is not None else ""),
         })
-    return {"unresolved": data.get("unresolved"), "floors": resolved}
+    return {"unresolved": unresolved, "floors": resolved}
 
 
 def cupboard_repositories(data: dict) -> tuple[Path, list[Path]]:
@@ -1138,6 +1172,47 @@ def cupboard_manifest(data: dict) -> dict:
             for repository in repositories
         ],
     }
+
+
+def local_history_manifest(data: dict) -> dict:
+    spec = data.get("repository") or {}
+    try:
+        roots = git_repositories_for_spec(spec)
+    except ValueError:
+        if spec.get("mode") == "clone": return {"sources": []}
+        raise
+    limit = max(1, min(50, int(os.environ.get("TASK_OFFICE_HISTORY_SESSION_LIMIT", "10"))))
+    sources = []
+    for agent in ("claude", "codex"):
+        sessions = []
+        for root in roots:
+            for session in adapter_for(agent).local_history_for(root):
+                sessions.append({**session, "repository": str(root)})
+        sessions = sorted(sessions, key=lambda item:item["modified_at"], reverse=True)[:limit]
+        if sessions:
+            paths = sorted({str(Path(item["path"]).parent) for item in sessions})
+            sources.append({"agent":agent,"source":paths[0],"paths":paths,"sessions":sessions})
+    return {"sources": sources}
+
+
+def local_history_content(data: dict) -> dict:
+    manifest = local_history_manifest(data)
+    requested = data.get("sessions") or {}
+    if not isinstance(requested, dict): raise ValueError("sessions must map agents to session IDs.")
+    byte_limit = max(16_384, min(2_000_000, int(os.environ.get("TASK_OFFICE_HISTORY_BYTES_PER_SESSION", "262144"))))
+    sections, imported = [], {}
+    for source in manifest["sources"]:
+        agent = source["agent"]
+        ids = requested.get(agent) or []
+        if not isinstance(ids, list): raise ValueError("Selected session IDs must be lists.")
+        allowed = {str(value) for value in ids}
+        selected = [item for item in source["sessions"] if item["session_id"] in allowed]
+        texts = [adapter_for(agent).extract_local_history(item, byte_limit) for item in selected]
+        texts = [text for text in texts if text]
+        if texts:
+            sections.append(f"Prior {agent} conversation history (bounded, tool output removed):\n" + "\n\n--- session ---\n\n".join(texts))
+        imported[agent] = [item["session_id"] for item in selected]
+    return {"context":"\n\n".join(sections),"imported":imported,"byteLimitPerSession":byte_limit}
 
 
 def checked_command(command: list[str], cwd: Path, timeout: int = 300) -> str:
@@ -1526,6 +1601,82 @@ def write_workspace_file(root: Path, relative: object, content: object) -> dict:
     return {"ok": True, "path": str(target.relative_to(root)), "size": len(encoded), "modifiedAt": int(target.stat().st_mtime * 1000)}
 
 
+def parse_spec_markdown(markdown: str) -> dict:
+    if not isinstance(markdown, str) or not markdown.strip(): raise ValueError("A Markdown spec document is required.")
+    if len(markdown.encode()) > MAX_BODY: raise ValueError("Spec documents are limited to 1 MB.")
+    title, preamble, phases, phase, item = "Untitled specification", "", [], None, None
+    implicit_phase_id = None
+    for line in markdown.splitlines():
+        heading = re.match(r"^(#{1,3})\s+(.+?)\s*$", line)
+        if heading:
+            level, text = len(heading.group(1)), heading.group(2).strip()
+            if level == 1:
+                title = text
+                match = re.search(r"\bPhase\s+(\d+)\b", text, re.IGNORECASE)
+                implicit_phase_id = f"Phase {match.group(1)}" if match else None
+                continue
+            if level == 2:
+                numbered = re.match(r"^(\d+)\.(\d+)\s+(.+)$", text)
+                if numbered:
+                    wanted = f"Phase {numbered.group(1)}"
+                    phase = next((value for value in phases if value["id"] == wanted), None)
+                    if phase is None:
+                        phase={"id":wanted,"title":wanted,"body":"","items":[]};phases.append(phase)
+                    item={"id":f"{numbered.group(1)}.{numbered.group(2)}","title":numbered.group(3),"body":"","status":"pending"};phase["items"].append(item);continue
+                phase = {"id": text.split("—",1)[0].strip(), "title": text, "body":"", "items": []}; phases.append(phase); item = None; continue
+            if level == 3:
+                if phase is None:
+                    identifier=implicit_phase_id or "Phase 1";phase={"id":identifier,"title":identifier,"body":"","items":[]};phases.append(phase)
+                parts=text.split(None,1);item={"id":parts[0],"title":parts[1] if len(parts)>1 else text,"body":"","status":"pending"};phase["items"].append(item);continue
+        if item is not None: item["body"] += line + "\n"
+        elif phase is not None: phase["body"] += line + "\n"
+        else: preamble += line + "\n"
+    for value in phases:
+        value["body"] = value["body"].strip()
+        for child in value["items"]: child["body"] = child["body"].strip()
+    phases = [value for value in phases if value["items"]]
+    if not phases: raise ValueError("The spec needs ## phase and ### item headings.")
+    return {"title":title,"preamble":preamble.strip(),"phases":phases}
+
+
+def spec_slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:80] or "specification"
+
+
+def render_spec_tracker(spec: dict) -> str:
+    lines=[f"# {spec['title']}","","This checklist is maintained by The Office from the accepted specification.",""]
+    if spec.get("preamble"): lines += [spec["preamble"],""]
+    for phase in spec["phases"]:
+        lines += [f"## {phase['title']}",""]
+        if phase.get("body"): lines += [phase["body"],""]
+        for item in phase["items"]:
+            lines.append(f"- [{'x' if item.get('status')=='done' else ' '}] **{item['id']} — {item['title']}**")
+            if item.get("body"):
+                lines += ["", *[f"  {line}" if line else "" for line in item["body"].splitlines()], ""]
+        lines.append("")
+    return "\n".join(lines).rstrip()+"\n"
+
+
+def intake_spec(data: dict) -> dict:
+    parsed=parse_spec_markdown(data.get("markdown"))
+    repositories=git_repositories_for_spec(data.get("repository") or {})
+    root=repositories[0]
+    relative=str(data.get("path") or f"docs/specs/{spec_slug(parsed['title'])}.md")
+    target=workspace_file(root,relative,must_exist=False);target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_text(render_spec_tracker(parsed))
+    return {**parsed,"path":str(target.relative_to(root)),"repository":str(root)}
+
+
+def complete_spec_phase(data: dict) -> dict:
+    root=workspace_root(data.get("repository"));target=workspace_file(root,data.get("path"));phase=str(data.get("phaseId") or "")
+    lines=target.read_text().splitlines();active=False;changed=0
+    for index,line in enumerate(lines):
+        if line.startswith("## "): active=line[3:].split("—",1)[0].strip()==phase or line[3:].strip()==phase;continue
+        if active and line.startswith("- [ ] "): lines[index]=line.replace("- [ ] ","- [x] ",1);changed+=1
+    target.write_text("\n".join(lines)+"\n")
+    return {"ok":True,"path":str(target.relative_to(root)),"phaseId":phase,"updated":changed}
+
+
 def repository_commands(root: Path) -> list[dict]:
     """Detect conservative, human-invoked test/lint/build commands."""
     commands: list[dict] = []
@@ -1751,6 +1902,7 @@ def preflight_publish(repository: Path, branch: str, git: str) -> None:
 def publish_repository(
     repository: Path, branch: str, destination_branch: str,
     title: str, body: str, git: str, gh: str, selection: dict | None = None,
+    spec_completion: dict | None = None,
 ) -> dict:
     current = checked_command([git, "branch", "--show-current"], repository)
     if current != branch:
@@ -1758,6 +1910,9 @@ def publish_repository(
     # Build the index exclusively from the reviewed patch. Rejected hunks stay
     # untouched in the working tree and remain visible after the commit.
     stage_selected_changes(repository, selection, git)
+    if spec_completion:
+        completed = complete_spec_phase(spec_completion)
+        checked_command([git, "add", "--", completed["path"]], repository)
     checked_command([git, "commit", "-m", title], repository)
     checked_command([git, "push", "-u", "origin", branch], repository, timeout=900)
     pr_output = checked_command(
@@ -1775,13 +1930,21 @@ def publish_repository(
 def publish_changes(data: dict) -> dict:
     branch, destination_branch, title, body, git, gh = validate_publish_details(data)
     repository = existing_repo_path(data.get("repository") or {})
+    completion = data.get("specCompletion")
+    if isinstance(completion, dict):
+        if Path(str(completion.get("repository"))).resolve() != repository:
+            raise ValueError("The spec tracker must be in the repository being published.")
     preflight_publish(repository, branch, git)
-    return publish_repository(repository, branch, destination_branch, title, body, git, gh, data.get("selection"))
+    return publish_repository(repository, branch, destination_branch, title, body, git, gh, data.get("selection"), completion)
 
 
 def publish_cupboard(data: dict) -> dict:
     branch, destination_branch, title, body, git, gh = validate_publish_details(data)
     root, discovered = cupboard_repositories(data.get("cupboard") or {})
+    completion = data.get("specCompletion")
+    completion_repository = Path(str(completion.get("repository"))).resolve() if isinstance(completion, dict) else None
+    if completion_repository and completion_repository not in discovered:
+        raise ValueError("The spec tracker must be in a cupboard being published.")
     requested = {str(value) for value in (data.get("repositories") or []) if value}
     dirty_repositories = [
         repository for repository in discovered
@@ -1811,6 +1974,7 @@ def publish_cupboard(data: dict) -> dict:
         publish_repository(
             repository, branch, destination_branch, title, body, git, gh,
             (data.get("selections") or {}).get("." if repository == root else str(repository.relative_to(root))),
+            completion if completion_repository==repository else None,
         )
         for repository in repositories
     ]
@@ -2528,6 +2692,18 @@ class OfficeHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/floor-intent-resolve":
                 self.json_response(floor_intent_resolution(data))
+                return
+            if parsed.path == "/api/local-history":
+                self.json_response(local_history_manifest(data))
+                return
+            if parsed.path == "/api/local-history-content":
+                self.json_response(local_history_content(data))
+                return
+            if parsed.path == "/api/spec-intake":
+                self.json_response(intake_spec(data), HTTPStatus.CREATED)
+                return
+            if parsed.path == "/api/spec-phase-complete":
+                self.json_response(complete_spec_phase(data))
                 return
             if parsed.path == "/api/select-directory":
                 self.json_response(select_directory(data))

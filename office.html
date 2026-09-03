@@ -624,6 +624,9 @@
   .folder-browser-entry:hover{ background:#DFF0D8; }
   .folder-browser-status{ min-height:16px; margin-bottom:8px; color:var(--ink-dim); font-size:10px; }
   .conditional-field[hidden]{ display:none; }
+  .inline-link{ color:var(--lead-dark); font-weight:700; text-decoration:underline; text-underline-offset:2px; }
+  .inline-link:hover{ color:var(--lead); }
+  .floor-intent-thread{ max-height:220px; }
   .modal-actions{ display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
   .modal-actions button{
     font-family:var(--font); font-size:11.5px; font-weight:700; letter-spacing:.02em; text-transform:uppercase;
@@ -1177,6 +1180,7 @@
   <nav class="section-nav" aria-label="Office sections">
     <button id="officeSectionButton" class="active" onclick="switchOfficeSection('office')">▦ Office floor</button>
     <button id="chatSectionButton" onclick="switchOfficeSection('chat')">⌁ Chat room</button>
+    <button onclick="openSpecIntake()">☷ Specs</button>
     <button onclick="openBuildingView()">▥ Building</button>
     <button onclick="watchTodayHappen()">▶ Today in 10s</button>
     <button onclick="openOrgChart()">⌘ Org chart</button>
@@ -1337,16 +1341,39 @@
   <div class="modal" style="width:min(640px,94vw);">
     <h2>Add a floor</h2>
     <p class="hint">Describe the repo(s) you want to add — a path or URL, and the agent if you have a preference.</p>
-    <div id="floorIntentConversation"></div>
+    <div id="floorIntentConversation" class="chat-thread floor-intent-thread"></div>
     <label for="floorIntentPromptInput">e.g. "add my smallcase-infra repo at ~/code/smallcase-infra, use Claude"</label>
-    <textarea id="floorIntentPromptInput" rows="2" placeholder="describe the repo(s) you want to add…"></textarea>
+    <textarea id="floorIntentPromptInput" rows="2" placeholder="describe the repo(s) you want to add…" onkeydown="handleFloorIntentKey(event)"></textarea>
     <div class="modal-actions">
       <button onclick="closeFloorIntentModal()">× Cancel</button>
       <button class="primary" id="floorIntentSubmitButton" onclick="submitFloorIntentPrompt()">➤ Parse</button>
     </div>
     <div class="field-note" id="floorIntentStatus" style="min-height:12px;"></div>
     <div id="floorIntentResults"></div>
-    <p class="hint"><a href="#" onclick="openFloorIntentAdvanced();return false;">⚙ Advanced setup (all fields, or edit an existing floor) →</a></p>
+    <p class="hint"><a class="inline-link" href="#" onclick="openFloorIntentAdvanced();return false;">⚙ Advanced setup (all fields, or edit an existing floor) →</a></p>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="historyConsentBackdrop">
+  <div class="modal" style="width:min(640px,94vw);">
+    <h2>Include prior local agent history?</h2>
+    <p class="hint" id="historyConsentIntro"></p>
+    <div id="historyConsentSources"></div>
+    <p class="field-note">Nothing is selected by default. Selected transcript tails are filtered to conversational content, summarized by onboarding, and stored only in this office's local SQLite context.</p>
+    <div class="modal-actions"><button onclick="finishHistoryConsent(false)">Continue without history</button><button class="primary" onclick="finishHistoryConsent(true)">Include selected</button></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="specIntakeBackdrop">
+  <div class="modal" style="width:min(760px,94vw);">
+    <h2>Specification intake</h2>
+    <p class="hint">Paste a Markdown specification. Its phases and items are parsed mechanically and stored as a checklist in the selected repository.</p>
+    <label for="specFloor">Target floor</label><select id="specFloor" onchange="renderStoredSpecs()"></select>
+    <label for="specPath">Repository path (optional)</label><input id="specPath" placeholder="docs/specs/generated-from-title.md">
+    <label for="specMarkdown">Markdown specification</label><textarea id="specMarkdown" rows="12" placeholder="# Product spec&#10;&#10;## Phase 1 — Foundation&#10;### 1.1 First item&#10;..." spellcheck="false"></textarea>
+    <input id="specUpload" type="file" accept=".md,text/markdown,text/plain" onchange="loadSpecUpload(this.files[0])">
+    <div class="modal-actions"><button onclick="closeSpecIntake()">× Close</button><button class="primary" onclick="submitSpecIntake()">Save tracker</button></div>
+    <div class="field-note" id="specIntakeStatus"></div><div id="storedSpecs"></div>
   </div>
 </div>
 
@@ -1727,6 +1754,9 @@ let floorIntentRun = null;
 let floorIntentBusy = false;
 let floorIntentConversation = [];
 let floorIntentPending = [];
+let floorIntentUnresolved = '';
+let historyConsentActive = null;
+const historyConsentQueue = [];
 let agentServiceRunTypes = null;
 let availableOfficePlugins = [];
 let reviewDiffData = [];
@@ -2035,6 +2065,8 @@ function closeTopModal(){
   if(open.id==='profileLogBackdrop') closeProfileLog();
   else if(open.id==='reviewModalBackdrop') closeReviewModal();
   else if(open.id==='commandPaletteBackdrop') closeCommandPalette();
+  else if(open.id==='historyConsentBackdrop') finishHistoryConsent(false);
+  else if(open.id==='specIntakeBackdrop') closeSpecIntake();
   else open.classList.remove('open');
   return true;
 }
@@ -3160,6 +3192,31 @@ function floorRepository(floor){
     : { mode:'local', path:floor.localPath, allowNonGit:!!floor.hasCupboards };
   return {...base, mcpServers:Array.isArray(floor.mcpServers)?floor.mcpServers:[], pluginPaths:Array.isArray(floor.pluginPaths)?floor.pluginPaths:[], permissions:floor.permissions||{requireConfirmationFor:[]}};
 }
+
+function openSpecIntake(){
+  const select=document.getElementById('specFloor');
+  select.innerHTML=floors.filter(floor=>launchCommand(floor)).map(floor=>`<option value="${floor.id}" ${floor.id===currentFloorId?'selected':''}>${escapeHtml(floor.name)}</option>`).join('');
+  document.getElementById('specIntakeStatus').textContent='';renderStoredSpecs();document.getElementById('specIntakeBackdrop').classList.add('open');
+}
+function closeSpecIntake(){document.getElementById('specIntakeBackdrop').classList.remove('open');}
+async function loadSpecUpload(file){if(!file)return;document.getElementById('specMarkdown').value=await file.text();}
+function renderStoredSpecs(){
+  const floor=floors.find(item=>item.id===document.getElementById('specFloor').value),container=document.getElementById('storedSpecs');
+  container.innerHTML=!floor||!(floor.specs||[]).length?'<div class="field-note">No tracked specs on this floor yet.</div>':(floor.specs||[]).map((spec,specIndex)=>`<div class="field-group"><b>${escapeHtml(spec.title)}</b><div class="field-note">${escapeHtml(spec.path)} · repository source of truth</div>${(spec.phases||[]).map((phase,phaseIndex)=>`<div class="queue-item"><span>${escapeHtml(phase.title)} · ${(phase.items||[]).length} item${(phase.items||[]).length===1?'':'s'}</span><button onclick="assignSpecPhase(${specIndex},${phaseIndex})">Assign phase</button></div>`).join('')}</div>`).join('');
+}
+async function submitSpecIntake(){
+  const floor=floors.find(item=>item.id===document.getElementById('specFloor').value),markdown=document.getElementById('specMarkdown').value,path=document.getElementById('specPath').value.trim(),status=document.getElementById('specIntakeStatus');
+  if(!floor||!markdown.trim())return;
+  status.textContent='Parsing and writing tracker…';
+  try{const response=await fetch('/api/spec-intake',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repository:floorRepository(floor),markdown,path:path||undefined})}),data=await response.json();if(!response.ok)throw new Error(data.error||'Spec intake failed');floor.specs=[...(floor.specs||[]),data];await saveAll();status.textContent=`Stored ${data.path} in ${data.repository}.`;document.getElementById('specMarkdown').value='';renderStoredSpecs();render();}catch(e){status.textContent=e.message||e;}
+}
+async function assignSpecPhase(specIndex,phaseIndex){
+  const floor=floors.find(item=>item.id===document.getElementById('specFloor').value),spec=floor&&(floor.specs||[])[specIndex],phase=spec&&(spec.phases||[])[phaseIndex];if(!floor||!phase)return;
+  const body=(phase.items||[]).map(item=>`### ${item.id} ${item.title}\n\n${item.body}`).join('\n\n');
+  const request=await enqueueFloorInitiative(floor,`${spec.title} — ${phase.title}`,`Implement only this selected specification phase. Do not implement other phases.\n\n${body}`,'Spec tracker',{deferSave:true});
+  request.specPath=spec.path;request.specRepository=spec.repository;request.specPhaseId=phase.id;request.specIndex=specIndex;request.specPhaseIndex=phaseIndex;
+  await saveAll();render();dispatchFloorInbox(floor.id);closeSpecIntake();
+}
 async function floorRepositoryHeads(floor){
   const response=await fetch(floor.hasCupboards?'/api/cupboard-state':'/api/repository-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(floor.hasCupboards?{cupboard:{path:floor.localPath}}:{repository:floorRepository(floor)})});
   const data=await response.json();if(!response.ok)throw new Error(data.error||'Could not inspect repository HEAD');
@@ -3861,6 +3918,7 @@ async function selectCloneParentFolder(){
 function openFloorIntentModal(){
   floorIntentConversation = [];
   floorIntentPending = [];
+  floorIntentUnresolved = '';
   floorIntentBusy = false;
   document.getElementById('floorIntentConversation').innerHTML = '';
   document.getElementById('floorIntentPromptInput').value = '';
@@ -3883,10 +3941,11 @@ function renderFloorIntentStatus(text){
 function appendFloorIntentConversationEntry(role, text){
   const log = document.getElementById('floorIntentConversation');
   if(!log || !text) return;
+  const isUser = role==='user';
   const div = document.createElement('div');
-  div.className = 'field-note';
-  div.style.marginTop = '0';
-  div.textContent = `${role==='user' ? 'You' : 'Office'}: ${text}`;
+  div.className = `chat-message ${isUser ? 'user' : 'assistant'}`;
+  const label = isUser ? 'You' : 'Office';
+  div.innerHTML = `<span class="chat-message-meta">${escapeHtml(label)}</span>${isUser ? escapeHtml(text) : renderMarkdown(text)}`;
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
 }
@@ -3903,6 +3962,9 @@ function submitFloorIntentPrompt(){
   document.getElementById('floorIntentResults').innerHTML = '';
   floorIntentPending = [];
   runFloorIntentParse();
+}
+function handleFloorIntentKey(event){
+  if(event.key==='Enter' && !event.shiftKey){event.preventDefault();submitFloorIntentPrompt();}
 }
 function floorIntentPrompt(){
   return [
@@ -3977,6 +4039,7 @@ async function resolveFloorIntentResult(result){
 function applyFloorIntentResolution(data){
   renderFloorIntentStatus('');
   const floorsOut = Array.isArray(data.floors) ? data.floors : [];
+  floorIntentUnresolved = typeof data.unresolved==='string' ? data.unresolved.trim() : '';
   appendFloorIntentConversationEntry('assistant', floorsOut.map(f=>f.resolution && f.resolution.summary).filter(Boolean).join(' · ') || 'Could not resolve any floors.');
   floorIntentPending = floorsOut.map(floor=>{
     const resolution = floor.resolution || { mode:'unresolved', summary:'Could not resolve this floor.' };
@@ -3991,7 +4054,7 @@ function applyFloorIntentResolution(data){
       url: resolution.url || floor.raw_path_or_url || '',
       repositories: Array.isArray(resolution.repositories) ? resolution.repositories : [],
       summary: resolution.summary || '',
-      cloneDirectory: ''
+      cloneDirectory: resolution.suggested_destination || ''
     };
   });
   renderFloorIntentPending();
@@ -4009,6 +4072,8 @@ function replyFloorIntentTop(){
   if(!text) return;
   floorIntentConversation.push({role:'user', text});
   appendFloorIntentConversationEntry('user', text);
+  floorIntentUnresolved = '';
+  floorIntentPending = [];
   document.getElementById('floorIntentResults').innerHTML = '';
   runFloorIntentParse();
 }
@@ -4022,19 +4087,51 @@ function replyFloorIntent(index){
   document.getElementById('floorIntentResults').innerHTML = '';
   runFloorIntentParse();
 }
+function chooseFloorIntentCupboard(index){
+  const item = floorIntentPending[index];
+  if(!item || !item.resolvedPath) return;
+  const message = `Use ${item.resolvedPath} as a cupboard root.`;
+  floorIntentConversation.push({role:'user', text:message});
+  appendFloorIntentConversationEntry('user', message);
+  item.mode = 'cupboard';
+  item.summary = `Using \`${item.resolvedPath}\` as an explicitly confirmed cupboard root`;
+  renderFloorIntentPending();
+}
+function setFloorIntentMode(index, mode){
+  const item = floorIntentPending[index];
+  if(!item) return;
+  item.mode = mode;
+  if(mode==='clone' && !item.cloneDirectory){
+    item.cloneDirectory = item.resolvedPath ? `${item.resolvedPath}-clone` : '';
+  }
+  renderFloorIntentPending();
+}
 function renderFloorIntentPending(){
   const container = document.getElementById('floorIntentResults');
-  if(!floorIntentPending.length){ container.innerHTML = ''; return; }
+  if(!floorIntentPending.length){
+    container.innerHTML = floorIntentUnresolved ? floorIntentFollowupMarkup(floorIntentUnresolved) : '';
+    return;
+  }
   const blocks = floorIntentPending.map((item,index)=>{
-    if(item.mode==='ambiguous' || item.mode==='unresolved'){
+    if(item.mode==='ambiguous'){
       return `<div class="field-group">
         <div class="field-note" style="margin-top:0;">${escapeHtml(item.summary || 'Which folder or repository URL is this?')}</div>
+        <div class="modal-actions" style="justify-content:flex-start;margin-bottom:10px;"><button class="primary" onclick="chooseFloorIntentCupboard(${index})">Use as cupboard root</button></div>
+        <label>Or give a different path</label>
         <input type="text" id="floorIntentReply${index}" placeholder="reply…">
         <div class="modal-actions"><button onclick="replyFloorIntent(${index})">➤ Send</button></div>
       </div>`;
     }
+    if(item.mode==='unresolved'){
+      return `<div class="field-group">
+        <div class="field-note" style="margin-top:0;">${escapeHtml(item.summary || 'Which folder or repository URL is this?')}</div>
+        <input type="text" id="floorIntentReply${index}" placeholder="give the correct path or URL…">
+        <div class="modal-actions"><button onclick="replyFloorIntent(${index})">➤ Send</button></div>
+      </div>`;
+    }
     return `<div class="field-group">
-      <div class="field-note" style="margin-top:0;">${escapeHtml(item.summary)} → ${floorIntentModeLabel(item.mode)}, ${escapeHtml(item.agent)}, lead ${item.leadName ? escapeHtml(item.leadName) : 'unnamed'}. <b>Go?</b></div>
+      <div class="task-history-title" style="margin-bottom:6px;">${escapeHtml(item.floorName || 'New floor')}</div>
+      <div class="field-note" style="margin-top:0;">${escapeHtml(item.summary)} → ${floorIntentModeLabel(item.mode)}, ${escapeHtml(item.agent)}, lead ${item.leadName ? escapeHtml(item.leadName) : 'unnamed'}.</div>
       <label>Floor name</label>
       <input type="text" value="${escapeHtml(item.floorName)}" oninput="floorIntentPending[${index}].floorName=this.value">
       <label>Agent</label>
@@ -4043,14 +4140,14 @@ function renderFloorIntentPending(){
         <option value="codex" ${item.agent==='codex'?'selected':''}>Codex</option>
       </select>
       <label>Tech lead name</label>
-      <input type="text" value="${escapeHtml(item.leadName)}" placeholder="required before Go" oninput="floorIntentPending[${index}].leadName=this.value">
+      <input type="text" value="${escapeHtml(item.leadName)}" placeholder="optional · defaults to Tech Lead" oninput="floorIntentPending[${index}].leadName=this.value">
       <label>Detected mode</label>
-      <select onchange="floorIntentPending[${index}].mode=this.value;renderFloorIntentPending();">
+      <select onchange="setFloorIntentMode(${index},this.value)">
         <option value="local" ${item.mode==='local'?'selected':''}>Existing local repository</option>
         <option value="clone" ${item.mode==='clone'?'selected':''}>Clone into a directory</option>
         <option value="cupboard" ${item.mode==='cupboard'?'selected':''}>Cupboard (folder of repositories)</option>
       </select>
-      ${item.mode==='clone' ? `<label>Clone destination</label><div class="path-picker"><input type="text" id="floorIntentClone${index}" value="${escapeHtml(item.cloneDirectory)}" oninput="floorIntentPending[${index}].cloneDirectory=this.value"><button type="button" onclick="pickFloorIntentCloneDestination(${index})">📁 Select</button></div>` : ''}
+      ${item.mode==='clone' ? `<label>Git repository URL</label><input type="text" value="${escapeHtml(item.url)}" oninput="floorIntentPending[${index}].url=this.value"><label>Clone destination</label><div class="path-picker"><input type="text" id="floorIntentClone${index}" value="${escapeHtml(item.cloneDirectory)}" oninput="floorIntentPending[${index}].cloneDirectory=this.value"><button type="button" onclick="pickFloorIntentCloneDestination(${index})">📁 Select</button></div>` : `<label>${item.mode==='cupboard'?'Cupboard root':'Repository folder'}</label><input type="text" value="${escapeHtml(item.resolvedPath)}" oninput="floorIntentPending[${index}].resolvedPath=this.value">`}
       ${item.mode==='cupboard' && item.repositories.length ? `<div class="field-note">${item.repositories.length} repositor${item.repositories.length===1?'y':'ies'} found; re-checked when this floor is built.</div>` : ''}
       <div class="modal-actions"><button class="primary" onclick="confirmFloorIntentFloor(${index})">▣ Go</button></div>
     </div>`;
@@ -4059,7 +4156,10 @@ function renderFloorIntentPending(){
   const combined = resolvedCount>1
     ? `<div class="modal-actions" style="margin-bottom:10px;"><button class="primary" onclick="confirmAllFloorIntent()">▣ Go for all ${resolvedCount} floors</button></div>`
     : '';
-  container.innerHTML = combined + blocks;
+  container.innerHTML = combined + blocks + (floorIntentUnresolved ? floorIntentFollowupMarkup(floorIntentUnresolved) : '');
+}
+function floorIntentFollowupMarkup(question){
+  return `<div class="field-group"><div class="field-note" style="margin-top:0;">${escapeHtml(question || 'Which folder or repository URL is missing?')}</div><input type="text" id="floorIntentTopReply" placeholder="reply…"><div class="modal-actions"><button onclick="replyFloorIntentTop()">➤ Send</button></div></div>`;
 }
 async function pickFloorIntentCloneDestination(index){
   const item = floorIntentPending[index];
@@ -4073,44 +4173,70 @@ async function pickFloorIntentCloneDestination(index){
 }
 async function confirmFloorIntentFloor(index){
   const item = floorIntentPending[index];
-  if(!item) return;
-  if(!item.floorName){ window.alert('Give this floor a name first.'); return; }
-  if(!['claude','codex'].includes(item.agent)){ window.alert('Choose Claude or Codex for this floor first.'); return; }
-  if(!item.leadName){ window.alert('Name a tech lead for this floor first.'); return; }
-  if(item.mode==='clone' && !item.cloneDirectory){ window.alert('Choose a clone destination first.'); return; }
-  if(item.mode!=='clone' && !item.resolvedPath){ window.alert('This floor needs a resolved local path first.'); return; }
-
-  editingFloorId = null;
-  document.getElementById('floorName').value = item.floorName;
-  document.getElementById('floorAgent').value = item.agent;
-  document.getElementById('techLeadName').value = item.leadName;
-  document.getElementById('floorReviewPolicy').value = 'always_review';
-  document.getElementById('floorDestinationBranch').value = 'main';
-  document.getElementById('permissionFileEdits').checked = false;
-  document.getElementById('permissionShell').checked = false;
-  document.getElementById('permissionNetwork').checked = false;
-  document.getElementById('permissionExternal').checked = false;
-  document.getElementById('floorTokenWarning').value = 150000;
-  document.getElementById('floorInputPrice').value = 0;
-  document.getElementById('floorOutputPrice').value = 0;
-  document.getElementById('floorMcpServers').value = '[]';
-  document.getElementById('floorPluginPaths').value = '';
-  document.getElementById('repoMode').value = item.mode==='clone' ? 'clone' : 'local';
-  document.getElementById('localRepoPath').value = item.mode==='clone' ? '' : item.resolvedPath;
-  document.getElementById('floorHasCupboards').checked = item.mode==='cupboard';
-  document.getElementById('cloneRepoUrl').value = item.mode==='clone' ? item.url : '';
-  document.getElementById('cloneDirectory').value = item.mode==='clone' ? item.cloneDirectory : '';
-  updateRepoFields();
-  updateCupboardField();
-
-  floorIntentPending = floorIntentPending.filter((_,i)=>i!==index);
-  renderFloorIntentPending();
-  await submitFloorModal();
-  if(!floorIntentPending.length) closeFloorIntentModal();
+  if(item) await buildConfirmedFloorIntents([item]);
 }
 async function confirmAllFloorIntent(){
-  for(let i=floorIntentPending.length-1;i>=0;i--){
-    if(['local','clone','cupboard'].includes(floorIntentPending[i].mode)) await confirmFloorIntentFloor(i);
+  await buildConfirmedFloorIntents(floorIntentPending.filter(item=>['local','clone','cupboard'].includes(item.mode)));
+}
+async function prepareConfirmedFloorIntent(item){
+  const floorName = String(item.floorName || '').trim();
+  const agent = String(item.agent || '').trim();
+  const leadName = String(item.leadName || '').trim() || 'Tech Lead';
+  if(!floorName) throw new Error('Give every floor a name first.');
+  if(!['claude','codex'].includes(agent)) throw new Error(`Choose Claude or Codex for ${floorName}.`);
+  if(!['local','clone','cupboard'].includes(item.mode)) throw new Error(`${floorName} still needs a repository mode.`);
+  const cloneUrl = item.mode==='clone' ? String(item.url || '').trim() : '';
+  const cloneDirectory = item.mode==='clone' ? String(item.cloneDirectory || '').trim() : '';
+  const localPath = item.mode==='clone' ? '' : String(item.resolvedPath || '').trim();
+  if(item.mode==='clone' && !cloneUrl) throw new Error(`${floorName} needs a Git repository URL.`);
+  if(item.mode==='clone' && !cloneDirectory) throw new Error(`${floorName} needs a clone destination.`);
+  if(item.mode!=='clone' && !localPath) throw new Error(`${floorName} needs a local folder.`);
+  const cupboardRepositories = item.mode==='cupboard' ? await discoverFloorCupboards(localPath) : [];
+  return {
+    id:uid('f'), createdAt:Date.now(), name:floorName, agent, techLeadName:leadName,
+    reviewPolicy:'always_review', destinationBranch:'main',
+    repoMode:item.mode==='clone' ? 'clone' : 'local', localPath, cloneUrl, cloneDirectory,
+    hasCupboards:item.mode==='cupboard', cupboardRepositories,
+    permissions:{autoApproveEdits:true,requireConfirmationFor:[]},
+    tokenWarningThreshold:150000, inputPricePerMillion:0, outputPricePerMillion:0,
+    mcpServers:[], pluginPaths:[], techLeadSessionId:null,
+    techLeadSessionMode:'orchestrator-v1', onboardingStatus:'starting',
+    onboardingStartedAt:null, codebaseContext:null
+  };
+}
+async function buildConfirmedFloorIntents(items){
+  if(floorIntentBusy || !items.length) return;
+  floorIntentBusy = true;
+  renderFloorIntentStatus(`Preparing ${items.length} floor${items.length===1?'':'s'}…`);
+  try{
+    const prepared = await Promise.all(items.map(prepareConfirmedFloorIntent));
+    for(const floor of prepared){
+      floors.push(floor);
+      ensureFloorStaff(floor.id);
+      log(`floor "${floor.name}" built for ${floor.agent}`);
+    }
+    currentFloorId = prepared[prepared.length-1].id;
+    await saveAll();
+    render();
+    const createdIds = new Set(items.map(item=>item.localId));
+    floorIntentPending = floorIntentPending.filter(item=>!createdIds.has(item.localId));
+    renderFloorIntentPending();
+    renderFloorIntentStatus(`Starting onboarding for ${prepared.length} floor${prepared.length===1?'':'s'}…`);
+    await Promise.all(prepared.map(requestFloorOnboarding));
+    renderFloorIntentStatus('');
+    if(!floorIntentPending.length && !floorIntentUnresolved){
+      closeFloorIntentModal();
+      if(pendingReception){
+        const request = pendingReception; pendingReception = null;
+        openReceptionModal();
+        document.getElementById('receptionTaskName').value = request.title;
+        document.getElementById('receptionTaskNote').value = request.note;
+      }
+    }
+  }catch(e){
+    renderFloorIntentStatus(`Could not build floors: ${e.message || e}`);
+  }finally{
+    floorIntentBusy = false;
   }
 }
 function openFloorModal(id){
@@ -4288,12 +4414,25 @@ function floorOnboardingPrompt(floor){
       ? `This folder has cupboards. These Git repositories were discovered beneath the floor root:\n${cupboards.length ? cupboards.map(item=>`- ${item.relativePath}`).join('\n') : '- none currently'}\nIterate over every listed repository and build a separate indexed context entry using its exact relative path. Also inspect useful non-Git files at the floor root as shared context. Summarize how the repositories relate to one another at the top level.`
       : 'The repositories array must contain exactly one entry with path "." for this repository.',
     'Inspect without modifying anything. For every Git repository, read its repository instructions, top-level documentation, dependency and build manifests, important configuration, source layout, test layout, CI workflows, and representative implementation files. Identify architecture boundaries, coding conventions, verification commands, risky areas, and key files future workers should know.',
+    floor.pendingHistoryContext ? `Previously approved local CLI history. Treat this as potentially stale evidence, reconcile it with the repository, and fold useful facts into the same architecture/conventions/risks/key-files result shape:\n\n${floor.pendingHistoryContext}` : '',
     'Do not edit files, install dependencies, run destructive commands, create commits, switch branches, push, or delegate implementation work. Return only the required structured repository context.'
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 }
 
 async function requestFloorOnboarding(floor){
   if(!floor || !launchCommand(floor)) return false;
+  if(floor.historyConsentPending) return false;
+  floor.historyConsentPending = true;
+  try{
+    const history = await requestLocalHistoryConsent(floor);
+    floor.pendingHistoryContext = history.context || '';
+    floor.pendingHistorySessions = history.imported || {};
+  }catch(e){
+    floor.pendingHistoryContext = '';
+    floor.pendingHistorySessions = {};
+  }finally{
+    floor.historyConsentPending = false;
+  }
   const profileId = `lead:${floor.id}`;
   floor.onboardingStatus = 'starting';
   floor.techLeadSessionId = null;
@@ -4334,6 +4473,42 @@ async function requestFloorOnboarding(floor){
   }
 }
 
+async function requestLocalHistoryConsent(floor){
+  const response = await fetch('/api/local-history',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repository:floorRepository(floor)})});
+  const data = await response.json();
+  if(!response.ok) throw new Error(data.error||'Could not inspect local agent history.');
+  const imported = floor.importedHistorySessions || {};
+  const sources = (data.sources||[]).map(source=>({...source,sessions:(source.sessions||[]).filter(session=>!(imported[source.agent]||[]).includes(session.session_id))})).filter(source=>source.sessions.length);
+  if(!sources.length) return {context:'',imported:{}};
+  return new Promise(resolve=>{historyConsentQueue.push({floor,sources,resolve});showNextHistoryConsent();});
+}
+function historyMonth(timestamp){return new Date(timestamp).toLocaleDateString(undefined,{month:'short',year:'numeric'});}
+function showNextHistoryConsent(){
+  if(historyConsentActive || !historyConsentQueue.length) return;
+  historyConsentActive = historyConsentQueue.shift();
+  const {floor,sources}=historyConsentActive;
+  document.getElementById('historyConsentIntro').textContent=`Found new local CLI sessions for ${floor.name}. Select any sources to include in this onboarding summary.`;
+  document.getElementById('historyConsentSources').innerHTML=sources.map((source,index)=>{
+    const dates=source.sessions.map(item=>item.modified_at).sort();
+    return `<label class="cupboard-toggle"><input type="checkbox" data-history-source="${index}"><span><b>${source.agent==='claude'?'Claude Code':'Codex'} · ${source.sessions.length} session${source.sessions.length===1?'':'s'} (${historyMonth(dates[0])}–${historyMonth(dates[dates.length-1])})</b><br><small>Read bounded transcript tails from ${escapeHtml((source.paths||[source.source]).join(', '))}</small></span></label>`;
+  }).join('');
+  document.getElementById('historyConsentBackdrop').classList.add('open');
+}
+async function finishHistoryConsent(include){
+  const active=historyConsentActive;if(!active)return;
+  const sessions={};
+  if(include)document.querySelectorAll('[data-history-source]:checked').forEach(input=>{const source=active.sources[Number(input.dataset.historySource)];sessions[source.agent]=source.sessions.map(item=>item.session_id);});
+  document.getElementById('historyConsentBackdrop').classList.remove('open');
+  historyConsentActive=null;
+  try{
+    if(Object.keys(sessions).length){
+      const response=await fetch('/api/local-history-content',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({repository:floorRepository(active.floor),sessions})});
+      const data=await response.json();if(!response.ok)throw new Error(data.error||'History import failed');active.resolve(data);
+    }else active.resolve({context:'',imported:{}});
+  }catch(e){window.alert(e.message||e);active.resolve({context:'',imported:{}});}
+  showNextHistoryConsent();
+}
+
 async function retryFloorOnboarding(floorId){
   const floor = floors.find(f=>f.id===floorId);
   if(floor) await requestFloorOnboarding(floor);
@@ -4358,6 +4533,7 @@ async function refreshFloorOnboarding(floorId){
 async function syncFloorOnboarding(){
   for(const floor of floors.filter(item=>['starting','running'].includes(item.onboardingStatus))){
     try{
+      if(floor.historyConsentPending) continue;
       const response = await fetch(`/api/logs?profileId=${encodeURIComponent('lead:'+floor.id)}&since=999999999`, { cache:'no-store' });
       if(!response.ok) continue;
       const data = await response.json();
@@ -4381,6 +4557,9 @@ async function syncFloorOnboarding(){
       }
       if(data.status==='completed' && data.result){
         floor.codebaseContext = data.result;
+        floor.importedHistorySessions=floor.importedHistorySessions||{};
+        for(const [agent,ids] of Object.entries(floor.pendingHistorySessions||{}))floor.importedHistorySessions[agent]=[...new Set([...(floor.importedHistorySessions[agent]||[]),...ids])];
+        floor.pendingHistoryContext='';floor.pendingHistorySessions={};
         floor.onboardingStatus = 'ready';
         floor.onboardingError = '';
         floor.onboardedAt = Date.now();
@@ -4540,7 +4719,7 @@ async function dispatchFloorInbox(floorId){
       request.status = 'planning';
       request.startedAt = pending && pending.startedAt;
       request.taskStartedAt = request.taskStartedAt || request.startedAt || Date.now();
-      if(pending) pending.taskStartedAt = request.taskStartedAt;
+      if(pending) Object.assign(pending,{taskStartedAt:request.taskStartedAt,specPath:request.specPath,specRepository:request.specRepository,specPhaseId:request.specPhaseId,specIndex:request.specIndex,specPhaseIndex:request.specPhaseIndex});
       await saveAll();
       render();
     }
@@ -4563,7 +4742,9 @@ async function recoverFloorIntake(floor, request){
         pendingLeadPlans.set(profileId, {
           floorId:floor.id, initiative:request.initiative, note:floorRequestNote(request),
           startedAt:data.startedAt, taskStartedAt:request.taskStartedAt,
-          requestId:request.id, source:request.source || 'floor'
+          requestId:request.id, source:request.source || 'floor', specPath:request.specPath,
+          specRepository:request.specRepository,specPhaseId:request.specPhaseId,
+          specIndex:request.specIndex,specPhaseIndex:request.specPhaseIndex
         });
       }else if(data.status==='completed' && data.result){
         const recovered = {
@@ -4571,6 +4752,7 @@ async function recoverFloorIntake(floor, request){
           startedAt:data.startedAt, taskStartedAt:request.taskStartedAt || data.startedAt || Date.now(),
           requestId:request.id, source:request.source || 'floor'
         };
+        Object.assign(recovered,{specPath:request.specPath,specRepository:request.specRepository,specPhaseId:request.specPhaseId,specIndex:request.specIndex,specPhaseIndex:request.specPhaseIndex});
         if(await beginFloorConsultations(floor, recovered, data.result)) return;
         floor.inbox = floor.inbox.filter(item=>item.id!==request.id);
         await saveAll();
@@ -4958,7 +5140,10 @@ async function applyTechLeadPlan(pending, result){
     startedAt:pending.taskStartedAt || pending.startedAt || Date.now(),
     assignments:[], completedTaskIds:[], sharedSession:!useMultiple,
     managerNote:pending.note || '', planResult:result,
-    repositories:[...new Set(assignedStreams.flatMap(stream=>stream.repositories || []))]
+    repositories:[...new Set(assignedStreams.flatMap(stream=>stream.repositories || []))],
+    specPath:pending.specPath||null, specRepository:pending.specRepository||null,
+    specPhaseId:pending.specPhaseId||null, specIndex:pending.specIndex,
+    specPhaseIndex:pending.specPhaseIndex
   };
   floor.multiInitiatives = [...(floor.multiInitiatives || []).slice(-9), tracker];
   for(const stream of assignedStreams){
@@ -5508,11 +5693,13 @@ async function publishReviewedChanges(){
   button.disabled = true;
   status.textContent = 'Creating branch, commit, push, and pull request…';
   try{
+    const tracker = floor.reviewTrackerId && (floor.multiInitiatives || []).find(item=>item.id===floor.reviewTrackerId);
+    const specCompletion = tracker&&tracker.specPath ? {repository:tracker.specRepository,path:tracker.specPath,phaseId:tracker.specPhaseId} : undefined;
     const response = await fetch(floor.hasCupboards ? '/api/publish-cupboard' : '/api/publish', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify(floor.hasCupboards
-        ? { cupboard:{path:floor.localPath}, repositories, branch, destinationBranch, title, body, selections }
-        : { repository:floorRepository(floor), branch, destinationBranch, title, body, selection:selections['.'] })
+        ? { cupboard:{path:floor.localPath}, repositories, branch, destinationBranch, title, body, selections, specCompletion }
+        : { repository:floorRepository(floor), branch, destinationBranch, title, body, selection:selections['.'], specCompletion })
     });
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || `Publish returned ${response.status}`);
@@ -5521,8 +5708,7 @@ async function publishReviewedChanges(){
     animatePaperTrail(floor.id);
     if(floor.hasCupboards) floor.reviewResult.pullRequests = (data.repositories || []).map(item=>item.pullRequest);
     else floor.reviewResult.pullRequest = data.pullRequest;
-    const tracker = floor.reviewTrackerId && (floor.multiInitiatives || []).find(item=>item.id===floor.reviewTrackerId);
-    if(tracker) tracker.reviewStatus = 'published';
+    if(tracker){tracker.reviewStatus = 'published';if(tracker.specPath){const spec=(floor.specs||[])[tracker.specIndex],phase=spec&&(spec.phases||[])[tracker.specPhaseIndex];if(phase)(phase.items||[]).forEach(item=>item.status='done');}}
     await saveAll();
     const created = floor.hasCupboards
       ? (data.repositories || []).map(item=>`${item.name}: ${item.pullRequest}`).join('\n')

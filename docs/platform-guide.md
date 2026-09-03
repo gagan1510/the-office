@@ -10,6 +10,8 @@ Each floor has one **Manager & Tech Lead** and five named **workers**:
 - Workers implement distinct workstreams or produce read-only reports. They return to the available pool when their assignment finishes.
 - Multiple workers share the project workspace. The plan declares repository-relative ownership, and overlapping paths are serialized to prevent concurrent edits to the same area.
 
+![A project floor coordinating several agents and repository tasks](../assets/the-office.png)
+
 The selected Claude Code or Codex CLI is configured per floor. Changing MCP or plugin configuration clears stored floor session IDs so a later run cannot silently resume with an obsolete tool set.
 
 ## Reception and routing
@@ -53,6 +55,8 @@ Phases are assigned independently. Only the selected phase enters the floor inbo
 ## Review and recovery
 
 When implementation finishes, The Office presents the actual staged, unstaged, and untracked changes. You can inspect the diff, edit the modified side, accept or reject individual hunks, and refresh the review digest.
+
+![Reviewing selected diff hunks with test and checkpoint status](../assets/review.png)
 
 Rejected hunks remain in the working tree. Immediately before publication, the server regenerates the diff and verifies that the repository has not changed since review. It stages only the selected patch and stops if the reviewed state is stale or a changed cupboard was omitted.
 

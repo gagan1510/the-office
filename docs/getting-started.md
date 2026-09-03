@@ -51,6 +51,8 @@ Keep the terminal open while using The Office. Stop the service with `Ctrl+C` af
 
 A floor is the durable workspace for a project. It contains repository context, a persistent Manager & Tech Lead session, five reusable workers, settings, and history.
 
+![Adding a local repository, Git clone, or multi-repository cupboard](../assets/onboarding.png)
+
 1. Select **+ floor**.
 2. Describe what to add, such as `add ~/code/payments with Codex` or provide a Git URL.
 3. Review the detected path, project name, agent, lead name, and clone destination.

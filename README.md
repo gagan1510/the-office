@@ -160,16 +160,23 @@ Claude normally uses the authentication available to the local CLI. If an inheri
 ## Creating a floor
 
 1. Select **+ floor**.
-2. Enter a repository/floor name.
-3. Choose Claude or Codex.
-4. Enter the Manager & Tech Lead's display name. The supplied name is used throughout the interface and activity history.
-5. Choose one repository setup:
-   - **Existing repository:** browse to a local folder containing `.git`.
-   - **Folder with cupboards:** choose **This folder has cupboards**, then select a folder that may not itself be a Git repository. The office discovers Git repositories beneath it.
-   - **Clone repository:** enter a Git URL and choose the parent destination folder.
-6. Save the floor.
+2. Describe the repository or repositories in one sentence, for example: `add ~/code/api and ~/code/web with Claude`.
+3. The selected lightweight agent extracts only the paths/URLs, optional floor names, optional agent, and optional lead name. The server then inspects local paths itself to distinguish an existing Git repository from a cupboard folder; URLs become clone floors.
+4. Review the one-line result for each floor, edit any detected field if necessary, then choose **Go** or **Go for all**. An omitted lead uses the `Tech Lead` display name, and URL-only requests receive an editable default clone destination.
+
+No onboarding run starts before this confirmation. If a path is missing or does not exist, reply with the correct path in the same conversation. If an existing folder contains no Git repositories, explicitly confirm that it is an empty cupboard root or provide a different path.
+
+Use **Advanced setup** for a non-default clone destination, precise cupboard configuration, permissions, MCP servers, plugin directories, costs, or other detailed settings. Existing floors retain their **Configure** action and every field from the original form.
 
 The selected agent first performs a read-only onboarding run. For an ordinary floor it records one repository context. For a cupboard floor it iterates over every discovered Git repository and records a path-keyed context entry containing architecture, conventions, test commands, risk areas, and important files, plus a floor-wide summary of how the cupboards relate. Useful non-Git files at the selected root are shared read-only context. Tasks remain unavailable until onboarding succeeds.
+
+Before onboarding or a context refresh, the office checks the selected repository paths for prior Claude Code and Codex sessions. If it finds sessions that have not already been imported, it shows their count, date range, and actual local source directory. Nothing is selected by default. Approved imports read only bounded transcript tails, discard tool-output and compaction payloads, and let the normal onboarding pass merge useful details into the existing repository-context shape. Imported session IDs are retained with the floor so later refreshes process only new sessions. Configure the limits with `TASK_OFFICE_HISTORY_SESSION_LIMIT` (default 10) and `TASK_OFFICE_HISTORY_BYTES_PER_SESSION` (default 262144 bytes per session).
+
+## Specification trackers
+
+Open **Specs** to paste or upload a Markdown specification and select its owning floor. The server parses `## Phase` and `### item` headings without a model call, then writes a checklist under `docs/specs/` in the repository (or an overridden safe relative path). That repository file is the durable source of truth and remains an ordinary working-tree change subject to review.
+
+Each parsed phase can be assigned independently. Only that phase's item text enters the floor inbox. When its reviewed work is published, the corresponding checklist items are checked and staged into the same commit. A multi-repository specification can use one floor's primary repository as its tracker while the existing reception routing coordinates implementation elsewhere.
 
 ## Work lifecycle
 

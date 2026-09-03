@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 from typing import Callable
 
@@ -33,12 +34,65 @@ class AgentAdapter:
     def uses_structured_output_files(self) -> bool:
         return False
 
+    def local_history_for(self, repo_path: Path) -> list[dict]:
+        return []
+
+    def extract_local_history(self, session: dict, byte_limit: int) -> str:
+        return ""
+
+    @staticmethod
+    def _tail_lines(path: Path, byte_limit: int) -> list[str]:
+        with path.open("rb") as handle:
+            size = path.stat().st_size
+            handle.seek(max(0, size - byte_limit))
+            data = handle.read(byte_limit)
+        if size > byte_limit:
+            data = data.split(b"\n", 1)[-1]
+        return data.decode("utf-8", errors="replace").splitlines()
+
 
 class CodexAdapter(AgentAdapter):
     name = "codex"
 
     def uses_structured_output_files(self) -> bool:
         return True
+
+    def local_history_for(self, repo_path: Path) -> list[dict]:
+        database = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "state_5.sqlite"
+        if not database.is_file(): return []
+        try:
+            connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(threads)")}
+            identifier = "session_id" if "session_id" in columns else "id"
+            ordering = "updated_at DESC" if "updated_at" in columns else "rowid DESC"
+            rows = connection.execute(
+                f"SELECT {identifier} AS session_id, rollout_path, title, model FROM threads WHERE cwd = ? ORDER BY {ordering}",
+                (str(repo_path.resolve()),),
+            ).fetchall()
+            connection.close()
+        except (sqlite3.Error, OSError): return []
+        result = []
+        for row in rows:
+            path = Path(str(row["rollout_path"] or "")).expanduser()
+            if not path.is_file(): continue
+            stat = path.stat()
+            result.append({"session_id":str(row["session_id"]),"path":str(path.resolve()),"modified_at":int(stat.st_mtime*1000),"size_bytes":stat.st_size,"title":row["title"] or "","model":row["model"] or ""})
+        return result
+
+    def extract_local_history(self, session: dict, byte_limit: int) -> str:
+        messages = []
+        for line in self._tail_lines(Path(session["path"]), byte_limit):
+            try: event = json.loads(line)
+            except json.JSONDecodeError: continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else event
+            kind = str(payload.get("type", ""))
+            if kind in ("function_call_output", "compacted", "compaction"): continue
+            if kind in ("message", "reasoning"):
+                content = payload.get("content") or payload.get("text") or payload.get("message")
+                if isinstance(content, list): content = " ".join(str(x.get("text", "")) for x in content if isinstance(x, dict))
+                if isinstance(content, str) and content.strip(): messages.append(content.strip())
+        return "\n\n".join(messages)
 
     def command(self, executable: str, repository: Path, prompt: str, run_type: str, **options) -> list[str]:
         session_id = options.get("session_id")
@@ -88,6 +142,46 @@ class CodexAdapter(AgentAdapter):
 
 class ClaudeAdapter(AgentAdapter):
     name = "claude"
+
+    def local_history_for(self, repo_path: Path) -> list[dict]:
+        projects = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
+        if not projects.is_dir(): return []
+        target = str(repo_path.resolve())
+        candidates = [projects / target.replace(os.sep, "-")]
+        # Verify the encoding empirically from transcript cwd metadata; this also
+        # supports CLI versions whose directory encoding differs.
+        for directory in projects.iterdir():
+            if directory.is_dir() and directory not in candidates:
+                candidates.append(directory)
+        result = []
+        for directory in candidates:
+            if not directory.is_dir(): continue
+            matched = directory == candidates[0]
+            if not matched:
+                for transcript in directory.glob("*.jsonl"):
+                    try:
+                        with transcript.open(errors="replace") as handle:
+                            matched = any(json.loads(line).get("cwd") == target for line in [handle.readline(), handle.readline()] if line.strip())
+                    except (OSError, json.JSONDecodeError): matched = False
+                    if matched: break
+            if not matched: continue
+            for path in directory.glob("*.jsonl"):
+                stat = path.stat()
+                result.append({"session_id":path.stem,"path":str(path.resolve()),"modified_at":int(stat.st_mtime*1000),"size_bytes":stat.st_size})
+            break
+        return sorted(result, key=lambda item:item["modified_at"], reverse=True)
+
+    def extract_local_history(self, session: dict, byte_limit: int) -> str:
+        messages = []
+        for line in self._tail_lines(Path(session["path"]), byte_limit):
+            try: event = json.loads(line)
+            except json.JSONDecodeError: continue
+            if event.get("type") not in ("user", "assistant", "summary"): continue
+            message = event.get("message") or event.get("summary") or ""
+            content = message.get("content", "") if isinstance(message, dict) else message
+            if isinstance(content, list): content = " ".join(str(x.get("text", "")) for x in content if isinstance(x, dict) and x.get("type") in (None,"text"))
+            if isinstance(content, str) and content.strip(): messages.append(content.strip())
+        return "\n\n".join(messages)
 
     def command(self, executable: str, repository: Path, prompt: str, run_type: str, **options) -> list[str]:
         command = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode"]

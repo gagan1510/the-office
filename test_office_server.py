@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -496,6 +497,8 @@ class FloorIntentTests(unittest.TestCase):
         resolution = app.resolve_floor_intent("https://github.com/example/repo.git")
         self.assertEqual(resolution["mode"], "clone")
         self.assertEqual(resolution["url"], "https://github.com/example/repo.git")
+        self.assertEqual(Path(resolution["suggested_destination"]).name, "repo")
+        self.assertTrue(Path(resolution["suggested_destination"]).is_absolute())
 
     def test_scp_style_url_resolves_to_clone(self):
         resolution = app.resolve_floor_intent("git@github.com:example/repo.git")
@@ -573,6 +576,19 @@ class FloorIntentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "At most"):
             app.floor_intent_resolution({"floors": floors, "unresolved": None})
 
+    def test_resolution_rejects_invalid_passthrough_fields(self):
+        base = {"raw_path_or_url": "/tmp/repo", "agent": None, "lead_name": None, "floor_name": None}
+        for update, message in (
+            ({"raw_path_or_url": None}, "raw_path_or_url"),
+            ({"agent": "other"}, "agent"),
+            ({"lead_name": 42}, "lead_name"),
+            ({"floor_name": []}, "floor_name"),
+        ):
+            with self.subTest(update=update), self.assertRaisesRegex(ValueError, message):
+                app.floor_intent_resolution({"floors": [{**base, **update}], "unresolved": None})
+        with self.assertRaisesRegex(ValueError, "unresolved"):
+            app.floor_intent_resolution({"floors": [base], "unresolved": []})
+
     def test_floor_intent_resolve_http_api(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.OfficeHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -610,6 +626,37 @@ class FloorIntentTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+
+class LocalHistoryAndSpecTests(unittest.TestCase):
+    def test_claude_history_detection_and_bounded_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);repo=root/"repo";repo.mkdir();projects=root/"claude"/"projects";project=projects/str(repo.resolve()).replace(os.sep,"-");project.mkdir(parents=True)
+            transcript=project/"session-1.jsonl"
+            transcript.write_text('\n'.join([json.dumps({"type":"user","cwd":str(repo.resolve()),"message":{"content":"old question"}}),json.dumps({"type":"file-history-snapshot","message":{"content":"secret blob"}}),json.dumps({"type":"assistant","message":{"content":[{"type":"text","text":"use src/app.py"}]}})]))
+            with mock.patch.dict(os.environ,{"CLAUDE_CONFIG_DIR":str(root/"claude")},clear=False):
+                sessions=app.adapter_for("claude").local_history_for(repo)
+                self.assertEqual(sessions[0]["session_id"],"session-1")
+                text=app.adapter_for("claude").extract_local_history(sessions[0],10_000)
+            self.assertIn("use src/app.py",text);self.assertNotIn("secret blob",text)
+
+    def test_codex_history_uses_read_only_thread_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);repo=root/"repo";repo.mkdir();codex=root/"codex";codex.mkdir();rollout=codex/"rollout.jsonl";rollout.write_text(json.dumps({"payload":{"type":"message","content":"architecture note"}})+'\n')
+            connection=sqlite3.connect(codex/"state_5.sqlite");connection.execute("CREATE TABLE threads(session_id TEXT,cwd TEXT,title TEXT,rollout_path TEXT,source TEXT,model TEXT)");connection.execute("INSERT INTO threads VALUES(?,?,?,?,?,?)",("s1",str(repo.resolve()),"Prior",str(rollout),"cli","model"));connection.commit();connection.close()
+            with mock.patch.dict(os.environ,{"CODEX_HOME":str(codex)},clear=False): sessions=app.adapter_for("codex").local_history_for(repo)
+            self.assertEqual([item["session_id"] for item in sessions],["s1"])
+
+    def test_spec_parser_writes_checklist_and_completes_one_phase(self):
+        markdown="# Product\n\n## Phase 1 — Base\n### 1.1 Build it\nDetails.\n### 1.2 Test it\nMore.\n\n## Phase 2 — Later\n### 2.1 Ship it\nLater."
+        parsed=app.parse_spec_markdown(markdown)
+        self.assertEqual([phase["id"] for phase in parsed["phases"]],["Phase 1","Phase 2"])
+        with tempfile.TemporaryDirectory() as directory:
+            repo=Path(directory);(repo/".git").mkdir()
+            result=app.intake_spec({"repository":{"mode":"local","path":str(repo)},"markdown":markdown})
+            target=repo/result["path"];self.assertIn("- [ ] **1.1",target.read_text())
+            done=app.complete_spec_phase({"repository":str(repo),"path":result["path"],"phaseId":"Phase 1"})
+            self.assertEqual(done["updated"],2);text=target.read_text();self.assertEqual(text.count("- [x]"),2);self.assertEqual(text.count("- [ ]"),1)
 
 
 class VisualPolishTests(unittest.TestCase):

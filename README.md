@@ -30,6 +30,37 @@ The application runs entirely on your computer. The Python server listens only o
 - Request read-only implementation reports researched by one available employee.
 - Use the separate Chat Room for ordinary Claude or Codex conversations.
 - Review combined changes before publishing.
+- Inspect the real staged, unstaged, and untracked Git diff in a Monaco diff viewer before publishing.
+- Accept or reject individual diff hunks; rejected edits remain in the working tree.
+- Restore a repository to the durable checkpoint created before an implementation run.
+- Retry failed or server-interrupted runs from their retained prompt and checkpoint.
+- Watch changed file names and counts update while an implementation run is active.
+- Open the command palette with Ctrl/Cmd+K and navigate employee desks with the arrow keys.
+- Reference current files with `@relative/path` in tech-lead questions and reports.
+- Save recurring reception tasks as reusable templates.
+- Fast-forward pull clean repositories and refresh stale onboarding context without rebuilding a floor.
+- Pull and refresh a single indexed cupboard from the dependency view.
+- Choose manual review or opt-in clean-review auto-publish per floor.
+- Configure conservative pre-run permission approvals, floor-scoped MCP servers, and additional Claude plugin directories.
+- Use every bundled Office plugin on every Claude floor automatically; valid custom plugin directories saved on any floor are shared office-wide.
+- Set per-floor token warnings and optional input/output prices for rough session cost estimates.
+- Receive browser notifications when runs finish or fail and when reviews are ready.
+- Search the current floor with ripgrep, search tasks/floors from the command palette, inspect a fleet overview, and copy retained run logs as Markdown transcripts.
+- Inspect an immutable diff from any retained implementation run's pre-run checkpoint to its completion snapshot.
+- Switch between classic, focused, and lively visual themes; optionally enable debounced sound cues.
+- See phase-specific worker animations and a brief celebration after a pull request is created.
+- Watch the office lighting follow local time and ambient floor motion reflect current workload.
+- Give workers distinct avatar styles; idle workers gain personality animations and shipped-work mementos.
+- Open a playful building view, see shipped-today streaks, and discover clickable decor easter eggs.
+- See persistent desk quirks, activity-aware mugs, rare speech bubbles, seasonal decor, neglect dust, swaying plants, and an occasional office pet.
+- Follow animated paper, reception parcels, and cross-floor messengers through the office when real workflow events occur.
+- Browse the employee plaque, corkboard, achievements wall, and joke org chart, or replay today's completed work in ten seconds.
+- Opt into a quiet synthesized office radio or a separate CRT scanline costume; both are off by default.
+- Get spatial floor pans, desk-to-modal zoom, elapsed-time rings, count-up stats, manager thinking glow, and completion/capacity flourishes.
+- Open a floor workspace to browse and edit repository files, read linked Markdown docs, inspect branches and commits, stash/pop, or discard one confirmed file change.
+- Run a plain shell or detected package/Make/Python/Rust/Go commands inside the selected repository and watch output stream in the office.
+- Hand-edit the modified side of a review diff, save it to disk, and refresh the review digest before publishing.
+- Watch a shared office garden grow with cumulative use, export a picture-day PNG, optionally show location-based weather from [Open-Meteo](https://open-meteo.com/en/docs), and discover idle/Konami ambient modes.
 - Push a branch and create a GitHub pull request only after explicit confirmation.
 - Detect manually pushed work across all floors and hide stale publish controls.
 - Persist floors, chat history, session IDs, task history, agent runs, and logs in a local SQLite database.
@@ -103,6 +134,16 @@ export TASK_OFFICE_CLAUDE_BIN=/absolute/path/to/claude
 python3 office_server.py
 ```
 
+Reception, planning, and review use a faster classifier model without changing the
+model used for implementation. Override or disable those defaults with:
+
+```sh
+export TASK_OFFICE_CLAUDE_CLASSIFIER_MODEL=haiku
+export TASK_OFFICE_CODEX_CLASSIFIER_MODEL=gpt-5.1-codex-mini
+```
+
+Set either variable to an empty string to let that CLI use its configured model.
+
 The server prints the detected Claude and Codex paths at startup.
 
 Office data is stored by default at `~/.local/share/the-office/office.db`. To use another location:
@@ -156,6 +197,38 @@ User chooses whether to publish
 One task branch per changed repository, followed by one GitHub pull request per repository
 ```
 
+Before every implementation/delegation run, the server snapshots each affected Git
+repository under `refs/the-office/checkpoints/run-<id>`. The activity view exposes
+that checkpoint as **Revert this run**. Reverting restores repository content and
+can overwrite later edits in the same repository, so it is disabled while that
+repository has an active run and always asks for confirmation.
+
+Multi-worker plans include repository-relative ownership hints. Independent paths run
+concurrently; overlapping paths (including a directory and one of its descendants)
+wait on a server-side lock. Locks are scoped to the resolved repository, released on
+success, failure, or cancellation, and retained when a failed run is retried.
+
+Floor configuration can require approval before an implementation run receives file,
+shell, network, or external-tool capabilities. The gate is deliberately conservative:
+the process does not start until the user approves the listed capability set from its
+activity view. MCP definitions are passed only to fresh sessions. Changing MCP or
+plugin configuration clears floor session IDs so resumed sessions cannot silently keep
+an older tool set. Lightweight routing/planning/review calls remain isolated from MCP.
+
+Every plugin under `the-office-plugins/plugins` is discovered from its manifest and
+passed to every full Claude floor invocation automatically. Valid custom plugin
+directories saved on any floor are also shared across all floors, so tool availability
+does not depend on which floor originally configured it. Lightweight reception,
+planning, review, and floor-call classification turns stay plugin-free to retain their
+low startup overhead. MCP servers remain floor-scoped because their credentials and
+external access policies may differ per repository. Claude plugin directories are not
+passed to Codex because Codex does not consume Claude's plugin format.
+
+The review dialog regenerates the diff immediately before publishing and sends a
+digest with the selected hunk IDs. Publishing stops if the repository changed after
+review. Only the selected patch is staged and committed; unchecked hunks and files
+remain local and recoverable.
+
 The Manager & Tech Lead coordinates and reviews; it does not take implementation work directly. For multi-worker tasks, it assigns distinct workstreams, waits for the workers, and reviews their combined result.
 
 Pam first compares each reception task with the onboarded summaries for all configured floors. She can create one scoped route or several cross-repository routes, and each route enters the corresponding floor's persistent inbox. The floor assignment form still sends work directly to the currently open floor.
@@ -208,6 +281,19 @@ Click the Manager & Tech Lead or a worker profile to see the actual local CLI ac
 Employee desks also show the latest activity inferred from structured Claude/Codex events. File-write tools appear as **Editing code**, common test commands appear as **Running tests**, and read, build, review, delegation, and command activity use their own labels and colors. When a CLI exposes only the shared orchestration session rather than individual subagent identities, assigned employees display that shared session's currently observed phase.
 
 The server keeps live process output in memory and persists the latest 5,000 log entries for every retained run in SQLite. Restarting the server marks unfinished runs as interrupted, while their metadata and logs remain available from the profile activity view. By default, the latest 200 runs are retained.
+
+## Lifecycle hooks
+
+Set `TASK_OFFICE_HOOKS_DIR` to a directory containing executable files named
+`on_run_finished`, `on_run_blocked`, and/or `on_review_ready`. The matching script is
+called directly (never through a shell), receives a bounded JSON event on stdin, and
+has 15 seconds to finish. Missing hooks are ignored. This is the extension point for
+local notification daemons or other integrations without adding service-specific code.
+
+```sh
+export TASK_OFFICE_HOOKS_DIR=/absolute/path/to/office-hooks
+python3 office_server.py
+```
 
 ## Persistence
 
@@ -307,8 +393,13 @@ Do not expose the server directly to a LAN or the public internet. A multi-user 
 ## Project structure
 
 ```text
-office.html       Single-page interface, office state, and workflow orchestration
-office_server.py  Local HTTP service, CLI execution, Git operations, and logs
+office.html       HTML shell, office state, and workflow orchestration
+ui/               Build-free ES modules for floor, review, reception, and settings UI
+office_server.py  Local HTTP service and compatibility-facing backend API
+office_agents.py  Claude/Codex adapter implementations
+office_backend/   Database, Git, repository-lock, HTTP, and adapter seams
+the-office-plugins/ Validated internal Claude marketplace and relevance signals
+plugin_suggestions.json Editable fallback manifest rules used for Codex floors
 test_office_server.py  SQLite persistence and state API tests
 requirements.txt Python dependency declaration (standard library only)
 README.md         Setup and operating documentation

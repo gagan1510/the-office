@@ -1,0 +1,15 @@
+{
+  "name": "the-office-plugins",
+  "description": "Locally reviewed, opt-in development helpers suggested by The Office.",
+  "owner": {"name": "The Office"},
+  "plugins": [
+    {"name":"terraform-helpers","source":"./plugins/terraform-helpers","description":"Terraform workflow helpers","relevance":{"topic":"Terraform","signals":{"cli":["terraform"],"filesRead":["**/*.tf"],"cwd":["infra","terraform"]}}},
+    {"name":"postgres-helpers","source":"./plugins/postgres-helpers","description":"PostgreSQL development helpers","relevance":{"topic":"PostgreSQL","signals":{"cli":["psql"],"manifestDeps":[{"file":"[/\\\\](package\\.json|requirements\\.txt|pyproject\\.toml)$","pattern":"postgres|psycopg|pgx"}]}}},
+    {"name":"kafka-helpers","source":"./plugins/kafka-helpers","description":"Kafka development helpers","relevance":{"topic":"Kafka","signals":{"cli":["kafka-topics"],"manifestDeps":[{"file":"[/\\\\](package\\.json|requirements\\.txt|pyproject\\.toml|pom\\.xml)$","pattern":"kafka"}]}}},
+    {"name":"aws-helpers","source":"./plugins/aws-helpers","description":"AWS development helpers","relevance":{"topic":"AWS","signals":{"cli":["aws"],"hosts":["amazonaws.com"],"manifestDeps":[{"file":"[/\\\\](package\\.json|requirements\\.txt|pyproject\\.toml)$","pattern":"boto3|aws-sdk|@aws-sdk"}]}}},
+    {"name":"container-helpers","source":"./plugins/container-helpers","description":"Docker and Compose helpers","relevance":{"topic":"containers","signals":{"cli":["docker"],"filesRead":["**/Dockerfile","**/compose.yaml","**/docker-compose.yml"]}}},
+    {"name":"stripe-helpers","source":"./plugins/stripe-helpers","description":"Stripe integration helpers","relevance":{"topic":"Stripe","signals":{"cli":["stripe"],"hosts":["api.stripe.com"],"manifestDeps":[{"file":"[/\\\\](package\\.json|requirements\\.txt|pyproject\\.toml)$","pattern":"stripe"}]}}},
+    {"name":"kubernetes-helpers","source":"./plugins/kubernetes-helpers","description":"Kubernetes and Helm workflow helpers","relevance":{"topic":"Kubernetes","signals":{"cli":["kubectl","helm"],"filesRead":["**/Chart.yaml","**/kustomization.yaml"],"cwd":["k8s","kubernetes","helm"]}}},
+    {"name":"github-helpers","source":"./plugins/github-helpers","description":"GitHub workflow helpers","relevance":{"topic":"GitHub","signals":{"cli":["gh"],"hosts":["github.com"],"filesRead":["**/.github/workflows/*.yml"]}}}
+  ]
+}

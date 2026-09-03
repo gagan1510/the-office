@@ -2,6 +2,8 @@
 
 The Office coordinates local Claude Code and Codex agents across Git repositories. These guides cover the platform from first launch through day-to-day operation and recovery.
 
+![The Office showing repository floors, task routing, and agent work](../assets/the-office.png)
+
 ## Start here
 
 - [Getting started](getting-started.md) explains the requirements, startup process, and first project onboarding.

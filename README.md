@@ -1,425 +1,139 @@
-# the office
+# The Office
 
-the office is a local-first browser interface for coordinating coding work through the Claude Code and Codex CLIs. Each repository is represented as a floor with a user-named Manager & Tech Lead, a persistent agent session, and a permanent team of five employees.
+The Office is a local-first platform for coordinating software work across one or more Git repositories with Claude Code and Codex.
 
-The application runs entirely on your computer. The Python server listens only on `127.0.0.1`, launches your locally installed agent CLIs, and gives them access to repositories you explicitly onboard.
+It gives every onboarded project a persistent Manager & Tech Lead, a reusable team of coding agents, repository-aware context, and a controlled path from task intake to reviewed code. Work stays on your computer: the service binds to `127.0.0.1`, uses your locally authenticated agent CLIs, and only operates on repositories you choose.
 
-![the office showing a repository floor with its manager, codebase chat, and five permanent employees](assets/the-office.png)
+![The Office coordinating work on a repository floor](assets/the-office.png)
 
-## Features
+## What the platform does
 
-- Choose Claude or Codex independently for each floor.
-- Onboard an existing local Git repository with the built-in folder browser.
-- Build a floor from a non-Git folder that has multiple Git repository "cupboards."
-- Clone a Git repository into a selected local directory.
-- Build repository context before accepting implementation work.
-- Index architecture, conventions, tests, risks, and key files separately for every cupboard during onboarding.
-- Keep one persistent Manager & Tech Lead session per floor.
-- Give every floor a stable team of five named employees who are reused across tasks.
-- Let reception analyze an incoming task and route scoped work to every repository floor it requires.
-- Let each lead analyze its routed work and decide whether it needs one worker or multiple workers.
-- Let floor leads make targeted, read-only consultation calls to other floors before finalizing a plan.
-- Give floor questions and reports read-only access to the context and repositories of other onboarded floors when explicitly needed.
-- Queue reception, inter-floor calls, and floor assignments durably while shared lead sessions are busy.
-- Delegate multi-worker work through the CLI's native subagent support.
-- Return workers to the available pool as soon as implementation finishes.
-- View human-readable, live CLI activity by clicking a profile or worker.
-- See live employee phases such as reading code, editing files, running tests, building, reviewing, and coordinating delegated work.
-- See the five most recent completion times and their average on every floor.
-- Ask the floor lead questions about the onboarded codebase.
-- Request read-only implementation reports researched by one available employee.
-- Use the separate Chat Room for ordinary Claude or Codex conversations.
-- Review combined changes before publishing.
-- Inspect the real staged, unstaged, and untracked Git diff in a Monaco diff viewer before publishing.
-- Accept or reject individual diff hunks; rejected edits remain in the working tree.
-- Restore a repository to the durable checkpoint created before an implementation run.
-- Retry failed or server-interrupted runs from their retained prompt and checkpoint.
-- Watch changed file names and counts update while an implementation run is active.
-- Open the command palette with Ctrl/Cmd+K and navigate employee desks with the arrow keys.
-- Reference current files with `@relative/path` in tech-lead questions and reports.
-- Save recurring reception tasks as reusable templates.
-- Fast-forward pull clean repositories and refresh stale onboarding context without rebuilding a floor.
-- Pull and refresh a single indexed cupboard from the dependency view.
-- Choose manual review or opt-in clean-review auto-publish per floor.
-- Configure conservative pre-run permission approvals, floor-scoped MCP servers, and additional Claude plugin directories.
-- Use every bundled Office plugin on every Claude floor automatically; valid custom plugin directories saved on any floor are shared office-wide.
-- Set per-floor token warnings and optional input/output prices for rough session cost estimates.
-- Receive browser notifications when runs finish or fail and when reviews are ready.
-- Search the current floor with ripgrep, search tasks/floors from the command palette, inspect a fleet overview, and copy retained run logs as Markdown transcripts.
-- Inspect an immutable diff from any retained implementation run's pre-run checkpoint to its completion snapshot.
-- Switch between classic, focused, and lively visual themes; optionally enable debounced sound cues.
-- See phase-specific worker animations and a brief celebration after a pull request is created.
-- Watch the office lighting follow local time and ambient floor motion reflect current workload.
-- Give workers distinct avatar styles; idle workers gain personality animations and shipped-work mementos.
-- Open a playful building view, see shipped-today streaks, and discover clickable decor easter eggs.
-- See persistent desk quirks, activity-aware mugs, rare speech bubbles, seasonal decor, neglect dust, swaying plants, and an occasional office pet.
-- Follow animated paper, reception parcels, and cross-floor messengers through the office when real workflow events occur.
-- Browse the employee plaque, corkboard, achievements wall, and joke org chart, or replay today's completed work in ten seconds.
-- Opt into a quiet synthesized office radio or a separate CRT scanline costume; both are off by default.
-- Get spatial floor pans, desk-to-modal zoom, elapsed-time rings, count-up stats, manager thinking glow, and completion/capacity flourishes.
-- Open a floor workspace to browse and edit repository files, read linked Markdown docs, inspect branches and commits, stash/pop, or discard one confirmed file change.
-- Run a plain shell or detected package/Make/Python/Rust/Go commands inside the selected repository and watch output stream in the office.
-- Hand-edit the modified side of a review diff, save it to disk, and refresh the review digest before publishing.
-- Watch a shared office garden grow with cumulative use, export a picture-day PNG, optionally show location-based weather from [Open-Meteo](https://open-meteo.com/en/docs), and discover idle/Konami ambient modes.
-- Push a branch and create a GitHub pull request only after explicit confirmation.
-- Detect manually pushed work across all floors and hide stale publish controls.
-- Persist floors, chat history, session IDs, task history, agent runs, and logs in a local SQLite database.
+- Onboards an existing Git repository, clones a remote repository, or groups several repositories into one project floor.
+- Builds durable context about architecture, conventions, tests, risks, and important files before accepting implementation work.
+- Routes a task to the correct project or projects through reception, then lets each project lead plan the work.
+- Reuses persistent Claude Code or Codex sessions so project knowledge carries across questions, reports, and tasks.
+- Delegates independent workstreams to a stable five-agent team while protecting overlapping repository paths.
+- Captures live activity, logs, changed files, test results, token usage, and task history.
+- Creates a recoverable Git checkpoint before implementation and retains an immutable completion snapshot.
+- Presents the real working-tree diff for review, including selectable hunks, before anything is published.
+- Keeps rejected edits local and allows a completed run to be restored to its pre-run checkpoint.
+- Pushes a task branch and opens GitHub pull requests only after explicit confirmation.
+- Stores floors, project context, conversations, runs, logs, and settings in a local SQLite database.
+
+The Office also supports read-only codebase questions, implementation reports, Markdown specification trackers, repository file and Git tools, scoped command execution, lifecycle hooks, per-floor permissions, MCP servers, and Claude plugins.
+
+## How work moves through The Office
+
+```text
+Task enters reception
+        |
+        v
+Repository ownership is identified
+        |
+        v
+Each Manager & Tech Lead plans its project work
+        |
+        v
+One or more agents implement and verify changes
+        |
+        v
+The combined diff and tests are reviewed
+        |
+        v
+The user chooses whether to publish
+        |
+        v
+One branch and pull request is created per changed repository
+```
+
+The lead coordinates and reviews rather than implementing directly. Cross-project work is split into repository-owned assignments, and floor leads can request targeted read-only context from each other before finalizing a plan.
 
 ## Requirements
 
 - Python 3.10 or newer
 - Git
-- At least one supported local agent CLI:
-  - Claude Code, authenticated with the user's local Claude account or a valid API key
-  - Codex CLI, authenticated locally
 - A modern browser
-- GitHub CLI (`gh`) authenticated with GitHub, only if you want the office to create pull requests
+- At least one locally authenticated agent CLI:
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+  - [Codex CLI](https://github.com/openai/codex)
+- GitHub CLI (`gh`), only when creating pull requests from The Office
 
-There are no third-party Python packages. `requirements.txt` is intentionally empty apart from explanatory comments.
+The Python service has no third-party package dependencies. `requirements.txt` is intentionally empty apart from explanatory comments.
 
-Verify the tools you intend to use:
+## Quick start
 
-```sh
-python3 --version
-git --version
-claude --version
-codex --version
-gh --version
-```
-
-the office also searches common user installation locations such as `~/.local/bin`, npm global bins, Volta, Bun, and installed NVM versions.
-
-## Installation
-
-Clone or copy this directory, then optionally create a virtual environment:
+Clone or copy the repository, then run:
 
 ```sh
 cd /path/to/office
-python3 -m venv .venv
-. .venv/bin/activate
-python3 -m pip install -r requirements.txt
-```
-
-No pip packages will be installed; the virtual environment simply gives the server an isolated Python runtime.
-
-## Running
-
-Start the local service:
-
-```sh
 python3 office_server.py
 ```
 
-Open:
+Open <http://127.0.0.1:8765>, select **+ floor**, and provide a local repository path or Git URL.
 
-```text
-http://127.0.0.1:8765
-```
-
-Use another port if necessary:
+You can use a different port:
 
 ```sh
 python3 office_server.py --port 9000
 ```
 
-Do not open `office.html` directly as a `file://` page. Agent execution, logs, repository browsing, Git checks, cloning, and publishing require the Python service.
+Do not open `office.html` as a `file://` page. Repository access, agent execution, persistence, Git operations, and publishing require the local Python service.
 
-## CLI configuration
+For a guided first run, see [Getting started](docs/getting-started.md).
 
-If an agent executable is not discoverable automatically, provide its absolute path before starting the server:
+## Documentation
 
-```sh
-export TASK_OFFICE_CODEX_BIN=/absolute/path/to/codex
-export TASK_OFFICE_CLAUDE_BIN=/absolute/path/to/claude
-python3 office_server.py
-```
+The repository includes task-oriented documentation for users and operators:
 
-Reception, planning, and review use a faster classifier model without changing the
-model used for implementation. Override or disable those defaults with:
+- [Documentation home](docs/README.md) — choose the right guide.
+- [Getting started](docs/getting-started.md) — install, start, and onboard your first project.
+- [Platform concepts and workflows](docs/platform-guide.md) — floors, leads, agents, routing, reports, specs, review, and publishing.
+- [Configuration reference](docs/configuration.md) — CLI discovery, data storage, history, models, hooks, permissions, MCP, and plugins.
+- [Operations and security](docs/operations.md) — persistence, backups, recovery, troubleshooting, and the deployment boundary.
 
-```sh
-export TASK_OFFICE_CLAUDE_CLASSIFIER_MODEL=haiku
-export TASK_OFFICE_CODEX_CLASSIFIER_MODEL=gpt-5.1-codex-mini
-```
+## Architecture
 
-Set either variable to an empty string to let that CLI use its configured model.
-
-The server prints the detected Claude and Codex paths at startup.
-
-Office data is stored by default at `~/.local/share/the-office/office.db`. To use another location:
-
-```sh
-export TASK_OFFICE_DATA_DIR=/absolute/path/to/office-data
-python3 office_server.py
-```
-
-Set `TASK_OFFICE_RUN_HISTORY` to change the number of retained agent runs; the default is 200 and the minimum is 20.
-
-Claude normally uses the authentication available to the local CLI. If an inherited `ANTHROPIC_API_KEY` is rejected, the office retries once using the user's local Claude login. Codex Chat Room sessions are allowed to run from the non-Git application directory and remain read-only.
-
-## Creating a floor
-
-1. Select **+ floor**.
-2. Describe the repository or repositories in one sentence, for example: `add ~/code/api and ~/code/web with Claude`.
-3. The selected lightweight agent extracts only the paths/URLs, optional floor names, optional agent, and optional lead name. The server then inspects local paths itself to distinguish an existing Git repository from a cupboard folder; URLs become clone floors.
-4. Review the one-line result for each floor, edit any detected field if necessary, then choose **Go** or **Go for all**. An omitted lead uses the `Tech Lead` display name, and URL-only requests receive an editable default clone destination.
-
-No onboarding run starts before this confirmation. If a path is missing or does not exist, reply with the correct path in the same conversation. If an existing folder contains no Git repositories, explicitly confirm that it is an empty cupboard root or provide a different path.
-
-Use **Advanced setup** for a non-default clone destination, precise cupboard configuration, permissions, MCP servers, plugin directories, costs, or other detailed settings. Existing floors retain their **Configure** action and every field from the original form.
-
-The selected agent first performs a read-only onboarding run. For an ordinary floor it records one repository context. For a cupboard floor it iterates over every discovered Git repository and records a path-keyed context entry containing architecture, conventions, test commands, risk areas, and important files, plus a floor-wide summary of how the cupboards relate. Useful non-Git files at the selected root are shared read-only context. Tasks remain unavailable until onboarding succeeds.
-
-Before onboarding or a context refresh, the office checks the selected repository paths for prior Claude Code and Codex sessions. If it finds sessions that have not already been imported, it shows their count, date range, and actual local source directory. Nothing is selected by default. Approved imports read only bounded transcript tails, discard tool-output and compaction payloads, and let the normal onboarding pass merge useful details into the existing repository-context shape. Imported session IDs are retained with the floor so later refreshes process only new sessions. Configure the limits with `TASK_OFFICE_HISTORY_SESSION_LIMIT` (default 10) and `TASK_OFFICE_HISTORY_BYTES_PER_SESSION` (default 262144 bytes per session).
-
-## Specification trackers
-
-Open **Specs** to paste or upload a Markdown specification and select its owning floor. The server parses `## Phase` and `### item` headings without a model call, then writes a checklist under `docs/specs/` in the repository (or an overridden safe relative path). That repository file is the durable source of truth and remains an ordinary working-tree change subject to review.
-
-Each parsed phase can be assigned independently. Only that phase's item text enters the floor inbox. When its reviewed work is published, the corresponding checklist items are checked and staged into the same commit. A multi-repository specification can use one floor's primary repository as its tracker while the existing reception routing coordinates implementation elsewhere.
-
-## Work lifecycle
+The platform is intentionally build-free and runs as a personal local service:
 
 ```text
-User task at reception
-   ↓
-Reception analyzes repository ownership
-   ↓
-One or more persistent floor inboxes
-   ↓
-Manager & Tech Lead analyzes the task
-   ↓
-Optional read-only calls to other floor leads
-   ↓
-Single-worker or multi-worker decision
-   ↓
-Worker delegation inside the shared floor session
-   ↓
-Worker desks return to the available pool
-   ↓
-Combined diff and test review across every changed cupboard
-   ↓
-User chooses whether to publish
-   ↓
-One task branch per changed repository, followed by one GitHub pull request per repository
+Browser client
+    |
+    v
+Python HTTP service ---- SQLite state and run history
+    |          |
+    |          +---- Git repositories and checkpoints
+    |
+    +---- Claude Code / Codex CLI processes
+                     |
+                     +---- optional MCP servers and Claude plugins
 ```
 
-Before every implementation/delegation run, the server snapshots each affected Git
-repository under `refs/the-office/checkpoints/run-<id>`. The activity view exposes
-that checkpoint as **Revert this run**. Reverting restores repository content and
-can overwrite later edits in the same repository, so it is disabled while that
-repository has an active run and always asks for confirmation.
-
-Multi-worker plans include repository-relative ownership hints. Independent paths run
-concurrently; overlapping paths (including a directory and one of its descendants)
-wait on a server-side lock. Locks are scoped to the resolved repository, released on
-success, failure, or cancellation, and retained when a failed run is retried.
-
-Floor configuration can require approval before an implementation run receives file,
-shell, network, or external-tool capabilities. The gate is deliberately conservative:
-the process does not start until the user approves the listed capability set from its
-activity view. MCP definitions are passed only to fresh sessions. Changing MCP or
-plugin configuration clears floor session IDs so resumed sessions cannot silently keep
-an older tool set. Lightweight routing/planning/review calls remain isolated from MCP.
-
-Every plugin under `the-office-plugins/plugins` is discovered from its manifest and
-passed to every full Claude floor invocation automatically. Valid custom plugin
-directories saved on any floor are also shared across all floors, so tool availability
-does not depend on which floor originally configured it. Lightweight reception,
-planning, review, and floor-call classification turns stay plugin-free to retain their
-low startup overhead. MCP servers remain floor-scoped because their credentials and
-external access policies may differ per repository. Claude plugin directories are not
-passed to Codex because Codex does not consume Claude's plugin format.
-
-The review dialog regenerates the diff immediately before publishing and sends a
-digest with the selected hunk IDs. Publishing stops if the repository changed after
-review. Only the selected patch is staged and committed; unchecked hunks and files
-remain local and recoverable.
-
-The Manager & Tech Lead coordinates and reviews; it does not take implementation work directly. For multi-worker tasks, it assigns distinct workstreams, waits for the workers, and reviews their combined result.
-
-Pam first compares each reception task with the onboarded summaries for all configured floors. She can create one scoped route or several cross-repository routes, and each route enters the corresponding floor's persistent inbox. The floor assignment form still sends work directly to the currently open floor.
-
-During planning, a lead can request targeted knowledge from another onboarded floor. The receiving lead answers in its own persistent session using read-only repository access. The originating lead waits for those calls, adds their structured answers to its context, and then finalizes the worker plan. Calls are limited to one consultation round per floor request so floors cannot loop indefinitely.
-
-Each lead also receives a directory of the other onboarded floors, including their names, repository paths, onboarding summaries, and architecture. When a task explicitly asks for a detail or context from another floor, the lead must call that floor unless the exact information is already available in the directory. Read-only questions and reports may inspect another floor directly when needed. Implementation remains repository-owned: another floor is context-only unless reception routed an implementation workstream to it.
-
-If a lead session is already planning, consulting, orchestrating, reviewing, answering a question, or recovering after a refresh, new work stays visibly queued and is dispatched in order when the session becomes available. Worker desks are released after implementation completes; user approval, merging, and publishing do not keep them occupied.
-
-Each floor keeps a browser-persisted history of its 20 most recent approved tasks and shows the latest five with their average. Elapsed time starts when the Manager & Tech Lead first begins analyzing the task and ends when the combined change review is approved; time waiting in the floor inbox and time waiting for publication are excluded. Existing retained task trackers are backfilled where possible and marked as approximate in the row tooltip when their older timestamps are less precise.
-
-Employees on a floor collaborate in the same workspace rather than using separate employee branches. Each workstream declares the cupboard paths it owns. Nothing is pushed automatically. After combined review, the publish action shows the changed cupboards and asks for both a task-specific source branch and the destination branch, then asks once for confirmation. The local service creates the source branch independently in every changed repository, stages and commits each repository, pushes each branch, and invokes `gh pr create --base <destination-branch>` once per repository. If a changed cupboard was omitted from the manager's review, publishing stops instead of silently including or ignoring it.
-
-## Repository push detection
-
-For every floor with an approved review, the office checks whether the current work has already been pushed. It considers:
-
-- working-tree changes;
-- commits ahead of the configured upstream;
-- local remote-tracking branches containing `HEAD`; and
-- the matching branch on `origin` when local tracking metadata is missing.
-
-Checks refresh every 30 seconds. Once a clean current commit is confirmed on a remote branch, the stale review/publish control is hidden. This also covers branches pushed manually without `git push -u`.
-
-## Chat and codebase questions
-
-The **Chat Room** is separate from the office floors. Choose Claude or Codex and use it as a plain conversational assistant. Chat Room prompts prohibit repository edits and external actions.
-
-Each floor also has an **Ask _name_** section. Those answers come from the persistent floor session and include the repository context gathered during onboarding. You can name another onboarded floor to use its context or inspect its repository in read-only mode. Questions are read-only and cannot be asked while the lead is handling another turn.
-
-## Reports
-
-Open **Reports** from a floor's Manager & Tech Lead card to ask how a feature, migration, integration, or architectural change should be implemented. The request stays attached to that floor and waits for one permanent employee to become available.
-
-The lead assigns exactly one employee to investigate the onboarded repository in read-only mode. The completed report includes:
-
-- an executive summary;
-- a recommended approach;
-- ordered implementation steps;
-- risks and tradeoffs; and
-- relevant repository files.
-
-Report work runs in that employee's independent Claude or Codex session, so the tech lead can continue analyzing and assigning normal floor work at the same time. It appears on the employee's desk and in the live activity log. The employee is returned to the available pool immediately after the report completes. Reports remain in the floor's local history and their summaries become part of the shared floor context for later questions and tasks.
-
-## Logs
-
-Click the Manager & Tech Lead or a worker profile to see the actual local CLI activity for its shared session. Logs are rendered in a concise human-readable format by default; raw JSON remains available from the log toolbar for debugging.
-
-Employee desks also show the latest activity inferred from structured Claude/Codex events. File-write tools appear as **Editing code**, common test commands appear as **Running tests**, and read, build, review, delegation, and command activity use their own labels and colors. When a CLI exposes only the shared orchestration session rather than individual subagent identities, assigned employees display that shared session's currently observed phase.
-
-The server keeps live process output in memory and persists the latest 5,000 log entries for every retained run in SQLite. Restarting the server marks unfinished runs as interrupted, while their metadata and logs remain available from the profile activity view. By default, the latest 200 runs are retained.
-
-## Lifecycle hooks
-
-Set `TASK_OFFICE_HOOKS_DIR` to a directory containing executable files named
-`on_run_finished`, `on_run_blocked`, and/or `on_review_ready`. The matching script is
-called directly (never through a shell), receives a bounded JSON event on stdin, and
-has 15 seconds to finish. Missing hooks are ignored. This is the extension point for
-local notification daemons or other integrations without adding service-specific code.
-
-```sh
-export TASK_OFFICE_HOOKS_DIR=/absolute/path/to/office-hooks
-python3 office_server.py
-```
-
-## Persistence
-
-Office configuration and conversation state are stored in a server-managed SQLite database. This includes:
-
-- floor and repository configuration;
-- selected agent and lead name;
-- worker/task state;
-- onboarding and review context;
-- Claude/Codex session IDs; and
-- Chat Room history;
-- recent task timing history; and
-- retained agent run metadata and logs.
-
-The database is independent of browser profile and server port. On the first launch after upgrading, an empty database automatically imports the existing state from browser storage. The browser copy is retained and refreshed after successful database saves as an emergency fallback; SQLite is authoritative after migration.
-
-State saves are atomic and revision-checked so a stale browser tab cannot silently overwrite newer state. If two tabs conflict, reload the stale tab. The server retains a pre-write snapshot at most once every five minutes and keeps the latest 20 snapshots. Server startup also creates a full SQLite backup and keeps the latest 10 in:
+Key source areas:
 
 ```text
-~/.local/share/the-office/backups/
+office_server.py   Local HTTP service and agent-run orchestration
+office_agents.py   Claude Code and Codex adapters
+office_backend/    Persistence, Git, repository, and HTTP modules
+office.html        Browser application shell and shared workflow state
+ui/                Build-free UI modules
+the-office-plugins/ Bundled Claude plugin marketplace
+test_office_server.py
+                   Persistence, Git, agent, and HTTP behavior tests
+docs/              User and operator documentation
 ```
 
-With a custom `TASK_OFFICE_DATA_DIR`, the `backups` folder is created inside that directory. Export the current logical state as JSON with:
+## Development
 
-```sh
-curl -s http://127.0.0.1:8765/api/state/export > office-state.json
-```
-
-SQLite contains local repository paths, prompts, conversations, and agent session IDs. The data directory is created with user-only permissions and should not be committed to Git or placed in a publicly synchronized folder.
-
-## Troubleshooting
-
-### The page says the local agent service is offline
-
-Run `python3 office_server.py` and open the printed HTTP address. Do not use the HTML file directly.
-
-### Claude or Codex is not found
-
-Confirm the CLI runs in a terminal. If it is installed in a nonstandard location, set `TASK_OFFICE_CLAUDE_BIN` or `TASK_OFFICE_CODEX_BIN` to the absolute executable path before starting the server.
-
-### Claude reports an invalid API key
-
-An `ANTHROPIC_API_KEY` in the server environment may override the user's Claude login. The office automatically retries rejected keys with the local login. You can also remove the stale variable before startup:
-
-```sh
-unset ANTHROPIC_API_KEY
-python3 office_server.py
-```
-
-### Codex says the directory is not trusted or is not a Git repository
-
-Restart the current version of `office_server.py`. Chat Room runs include Codex's non-Git-directory override; repository floors still operate inside their configured Git repository.
-
-### Folder selection does not open a native dialog
-
-Use the built-in folder browser in the floor form. It does not require `zenity`, `kdialog`, or Tkinter. The server retains native-picker support as an optional fallback where one of those tools is available.
-
-### A manually pushed branch still shows a publish button
-
-Wait up to 30 seconds and refresh the page. Confirm that the working tree is clean and that the current commit exists on the corresponding branch on `origin`. Restart the Python server after updating its code so the repository-state endpoint is available.
-
-### Pull-request creation fails
-
-Verify that:
-
-```sh
-gh auth status
-git remote -v
-```
-
-The repository must have an `origin` remote that the current user can push to, and `gh` must be authenticated for that GitHub host.
-
-### The UI only shows a generic failure
-
-New runs return a concise failure reason directly in chat. Click the relevant profile to inspect the complete local CLI log when more detail is needed.
-
-### The UI reports a storage conflict
-
-Another browser tab saved a newer state revision. Reload the stale tab instead of retrying the write. Its latest unsaved view remains in that tab's browser backup.
-
-### The SQLite database cannot be opened
-
-Confirm the directory printed beside `Storage:` when the server starts exists and is writable by the current user. If `TASK_OFFICE_DATA_DIR` is configured, it must point to a writable local directory.
-
-## Security and deployment model
-
-The office is designed as a personal local application, not a public web service:
-
-- It binds to `127.0.0.1` and has no user authentication.
-- Agent processes inherit the local user's filesystem permissions and selected CLI environment.
-- Implementation agents may edit files in onboarded repositories.
-- Publishing can stage all current repository changes and push them after confirmation.
-- The SQLite database and browser fallback may contain repository paths, prompts, task descriptions, logs, and session IDs.
-
-Do not expose the server directly to a LAN or the public internet. A multi-user deployment would require authentication, authorization, per-user process isolation, encrypted server-side persistence, CSRF protection, audit controls, and strict repository access boundaries.
-
-## Project structure
-
-```text
-office.html       HTML shell, office state, and workflow orchestration
-ui/               Build-free ES modules for floor, review, reception, and settings UI
-office_server.py  Local HTTP service and compatibility-facing backend API
-office_agents.py  Claude/Codex adapter implementations
-office_backend/   Database, Git, repository-lock, HTTP, and adapter seams
-the-office-plugins/ Validated internal Claude marketplace and relevance signals
-plugin_suggestions.json Editable fallback manifest rules used for Codex floors
-test_office_server.py  SQLite persistence and state API tests
-requirements.txt Python dependency declaration (standard library only)
-README.md         Setup and operating documentation
-.gitignore        Local Python, editor, secret, log, and OS exclusions
-assets/           Screenshots and other README media
-```
-
-Run the storage and API tests with:
+Run the test suite with:
 
 ```sh
 python3 -m unittest -v test_office_server.py
 ```
 
-## Stopping the server
+The service is implemented with the Python standard library and plain browser modules, so no package installation or asset build step is required.
 
-Press `Ctrl+C` in the terminal running `office_server.py`. Active child-agent work should be allowed to finish or stopped from the relevant profile before shutting down.
+## Security boundary
+
+The Office is a personal local application, not a multi-user web service. It has no application-level authentication, and agent processes inherit the permissions of the user running the server. Do not expose it directly to a LAN or the public internet.
+
+See [Operations and security](docs/operations.md) before using it with sensitive repositories or extending its deployment model.

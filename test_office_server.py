@@ -358,6 +358,10 @@ class AgentCommandTests(unittest.TestCase):
         plan = app.agent_command("claude", Path("/tmp"), "prompt", "plan", output_schema={})
         work = app.agent_command("claude", Path("/tmp"), "prompt", "work")
         self.assertIn("--strict-mcp-config", plan)
+        self.assertEqual(
+            json.loads(plan[plan.index("--mcp-config") + 1]),
+            {"mcpServers": {}},
+        )
         self.assertIn("--settings", plan)
         self.assertIn("--model", plan)
         self.assertNotIn("--strict-mcp-config", work)
@@ -367,6 +371,35 @@ class AgentCommandTests(unittest.TestCase):
         for plugin in app.bundled_plugin_paths():
             self.assertIn(plugin, work)
         self.assertNotIn("--plugin-dir", plan)
+
+    @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
+    def test_claude_floor_intent_classification_is_lightweight(self, _find_cli):
+        floor_intent = app.agent_command("claude", Path("/tmp"), "prompt", "floor_intent", output_schema={})
+        work = app.agent_command("claude", Path("/tmp"), "prompt", "work")
+        self.assertIn("--strict-mcp-config", floor_intent)
+        self.assertEqual(
+            json.loads(floor_intent[floor_intent.index("--mcp-config") + 1]),
+            {"mcpServers": {}},
+        )
+        self.assertIn("--settings", floor_intent)
+        self.assertIn("--model", floor_intent)
+        self.assertIn("--json-schema", floor_intent)
+        self.assertEqual(
+            floor_intent[floor_intent.index("--permission-mode") + 1], "plan"
+        )
+        self.assertNotIn("--strict-mcp-config", work)
+        self.assertNotIn("--model", work)
+
+    @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
+    def test_codex_floor_intent_fresh_run_uses_sandbox_and_classifier_model(self, _find_cli):
+        command = app.agent_command(
+            "codex", Path("/tmp"), "prompt", "floor_intent", "/tmp/schema", "/tmp/out", {}
+        )
+        self.assertIn("--sandbox", command)
+        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+        self.assertIn("--model", command)
+        self.assertIn("--output-schema", command)
+        self.assertNotIn("--approve-for-me", command)
 
     @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
     def test_codex_resume_omits_fresh_run_shaping_flags(self, _find_cli):
@@ -456,6 +489,127 @@ class AgentCommandTests(unittest.TestCase):
         approved = app.approved_plugin_path("postgresql@the-office-plugins")
         self.assertEqual(approved["name"], "postgres-helpers")
         self.assertTrue(Path(approved["path"]).is_dir())
+
+
+class FloorIntentTests(unittest.TestCase):
+    def test_url_shaped_input_resolves_to_clone(self):
+        resolution = app.resolve_floor_intent("https://github.com/example/repo.git")
+        self.assertEqual(resolution["mode"], "clone")
+        self.assertEqual(resolution["url"], "https://github.com/example/repo.git")
+
+    def test_scp_style_url_resolves_to_clone(self):
+        resolution = app.resolve_floor_intent("git@github.com:example/repo.git")
+        self.assertEqual(resolution["mode"], "clone")
+
+    def test_existing_git_directory_resolves_to_local(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            repository.mkdir()
+            (repository / ".git").mkdir()
+            resolution = app.resolve_floor_intent(str(repository))
+            self.assertEqual(resolution["mode"], "local")
+            self.assertEqual(resolution["resolved_path"], str(repository.resolve()))
+
+    def test_directory_with_nested_repos_resolves_to_cupboard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cupboard = Path(directory) / "cupboard"
+            nested = cupboard / "nested-repo"
+            nested.mkdir(parents=True)
+            (nested / ".git").mkdir()
+            resolution = app.resolve_floor_intent(str(cupboard))
+            self.assertEqual(resolution["mode"], "cupboard")
+            self.assertEqual(resolution["repositories"], [str(nested.resolve())])
+
+    def test_existing_empty_directory_is_ambiguous(self):
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Path(directory) / "empty"
+            empty.mkdir()
+            resolution = app.resolve_floor_intent(str(empty))
+            self.assertEqual(resolution["mode"], "ambiguous")
+            self.assertEqual(resolution["repositories"], [])
+
+    def test_nonexistent_path_is_unresolved(self):
+        resolution = app.resolve_floor_intent("/definitely/not/a/real/path/xyz")
+        self.assertEqual(resolution["mode"], "unresolved")
+
+    def test_empty_string_is_unresolved(self):
+        resolution = app.resolve_floor_intent("")
+        self.assertEqual(resolution["mode"], "unresolved")
+
+    def test_resolution_maps_floors_and_preserves_passthrough_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            repository.mkdir()
+            (repository / ".git").mkdir()
+            payload = {
+                "unresolved": None,
+                "floors": [{
+                    "raw_path_or_url": str(repository),
+                    "agent": "codex",
+                    "lead_name": "Priya",
+                    "floor_name": "Payments",
+                }],
+            }
+            result = app.floor_intent_resolution(payload)
+            self.assertIsNone(result["unresolved"])
+            self.assertEqual(len(result["floors"]), 1)
+            entry = result["floors"][0]
+            self.assertEqual(entry["agent"], "codex")
+            self.assertEqual(entry["lead_name"], "Priya")
+            self.assertEqual(entry["floor_name"], "Payments")
+            self.assertEqual(entry["resolution"]["mode"], "local")
+
+    def test_resolution_rejects_missing_floors(self):
+        with self.assertRaisesRegex(ValueError, "non-empty list"):
+            app.floor_intent_resolution({"unresolved": None})
+
+    def test_resolution_rejects_empty_floors(self):
+        with self.assertRaisesRegex(ValueError, "non-empty list"):
+            app.floor_intent_resolution({"floors": [], "unresolved": None})
+
+    def test_resolution_rejects_too_many_floors(self):
+        floors = [{"raw_path_or_url": "x", "agent": None, "lead_name": None, "floor_name": None}
+                   for _ in range(app.MAX_FLOOR_INTENT_ITEMS + 1)]
+        with self.assertRaisesRegex(ValueError, "At most"):
+            app.floor_intent_resolution({"floors": floors, "unresolved": None})
+
+    def test_floor_intent_resolve_http_api(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.OfficeHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def request(path, payload):
+            body = json.dumps(payload).encode()
+            call = urllib.request.Request(
+                base + path, data=body, method="POST", headers={"Content-Type": "application/json"}
+            )
+            try:
+                with urllib.request.urlopen(call, timeout=5) as response:
+                    return response.status, json.load(response)
+            except urllib.error.HTTPError as error:
+                return error.code, json.load(error)
+
+        try:
+            payload = {
+                "unresolved": None,
+                "floors": [{
+                    "raw_path_or_url": "https://github.com/example/repo.git",
+                    "agent": "claude", "lead_name": "Sam", "floor_name": "Growth",
+                }],
+            }
+            status, resolved = request("/api/floor-intent-resolve", payload)
+            self.assertEqual(status, 200)
+            self.assertEqual(resolved["floors"][0]["resolution"]["mode"], "clone")
+            self.assertEqual(resolved["floors"][0]["lead_name"], "Sam")
+
+            status, error = request("/api/floor-intent-resolve", {"unresolved": None})
+            self.assertEqual(status, 400)
+            self.assertIn("error", error)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 class VisualPolishTests(unittest.TestCase):

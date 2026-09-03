@@ -1075,6 +1075,88 @@
   @keyframes weather-rain{to{transform:translateY(7px)}}
   @media(max-width:680px){.office-wall-strip{grid-template-columns:1fr}.seasonal-decor{display:none}.floor-utility-strip{justify-content:space-around;gap:12px}.floor-utility-strip::before{display:none}}
   @media(max-width:680px){.workspace-file-layout,.git-layout{grid-template-columns:1fr}.workspace-tree{max-height:190px}.terminal-compose{grid-template-columns:1fr}.floor-utility-strip .office-garden{display:block;min-width:100px}}
+
+  /* Responsive shell: preserve the pixel-office look without fixed-size collisions. */
+  .wrap{ padding:clamp(12px,1.25vw,24px) clamp(10px,1.45vw,30px) 112px; }
+  .section-nav{ flex-wrap:wrap; min-width:0; }
+  .section-nav button,.floor-tab{ flex:0 0 auto; white-space:nowrap; }
+  .reception-card,.reception-left,.manager-info,.lead-info{ min-width:0; }
+  .floor-content-row{
+    --floor-sidebar-width:clamp(340px,24vw,430px);
+    display:grid;
+    grid-template-columns:minmax(320px,var(--floor-sidebar-width)) minmax(0,1fr);
+    align-items:start;
+    gap:clamp(12px,1vw,20px);
+    width:100%;
+    max-width:none;
+    margin:0 auto 16px;
+  }
+  .floor-left-col{ width:auto; max-width:none; min-width:0; flex:none; }
+  .floor-right-col{ width:100%; max-width:none; min-width:0; }
+  .floor-left-col .manager-card{ height:auto; min-height:0; overflow:visible; }
+  .floor-left-col .manager-left{ flex:none; }
+  .floor-left-col .manager-info{ max-height:none; overflow:visible; }
+  .floor-left-col .manager-actions{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; }
+  .floor-left-col .manager-actions>button,
+  .floor-left-col .manager-actions>.badge{ width:100%; min-width:0; height:auto; white-space:normal; }
+  .floor-left-col #leadQuestionSection{ min-height:clamp(340px,45vh,520px); flex:none; }
+  .floor{ grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); padding:clamp(14px,1.2vw,22px); gap:clamp(12px,1vw,18px); }
+  .desk{ min-width:0; min-height:clamp(210px,14vw,238px); }
+  .desk-top{ min-width:0; gap:8px; }
+  .nameplate{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge{ flex:none; }
+  .office-wall-strip,.wall-widget{ min-width:0; }
+  .wall-widget{ overflow-wrap:anywhere; }
+  .counts{ display:grid; grid-template-columns:repeat(6,minmax(70px,1fr)); margin-bottom:12px; }
+  .count-chip{ min-width:0; justify-content:center; }
+  .task-history,.task-history-item,.task-history-title{ min-width:0; }
+
+  @media(max-width:1100px){
+    .floor-content-row{ grid-template-columns:1fr; }
+    .floor-left-col{
+      display:grid;
+      grid-template-columns:minmax(280px,.85fr) minmax(340px,1.15fr);
+      align-items:stretch;
+      width:100%;
+      max-width:none;
+    }
+    .floor-left-col .manager-card{ height:100%; margin-bottom:0; }
+    .floor-left-col #leadQuestionSection{ min-height:360px; margin-bottom:0; }
+    .floor-tabs,.section-nav{
+      flex-wrap:nowrap;
+      overflow-x:auto;
+      overscroll-behavior-inline:contain;
+      scrollbar-width:thin;
+      padding-bottom:5px;
+    }
+  }
+
+  @media(max-width:760px){
+    .wrap{ padding:12px 9px 92px; }
+    .floor-left-col{ grid-template-columns:1fr; }
+    .floor-left-col .manager-card{ height:auto; margin-bottom:0; }
+    .floor-left-col #leadQuestionSection{ min-height:330px; }
+    .office-wall-strip{ grid-template-columns:1fr 1fr; }
+    .office-wall-strip .corkboard{ grid-column:1/-1; grid-row:1; }
+    .counts{ grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .reception-card{ align-items:stretch; }
+    .reception-card>button{ align-self:center; flex:none; }
+  }
+
+  @media(max-width:520px){
+    header{ gap:12px; }
+    .clock-block{ width:100%; text-align:left; }
+    .reception-card{ flex-direction:column; }
+    .reception-card>button{ width:100%; }
+    .floor-left-col .manager-actions{ grid-template-columns:1fr; }
+    .counts{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .office-wall-strip{ grid-template-columns:1fr; }
+    .office-wall-strip .corkboard{ grid-column:auto; grid-row:auto; }
+    .floor{ grid-template-columns:1fr; }
+    .floor-utility-strip{ flex-wrap:wrap; justify-content:center; min-height:78px; }
+    .floor-utility-strip::before{ display:none; }
+    .task-history-item{ grid-template-columns:minmax(0,1fr) auto; }
+  }
 </style>
 </head>
 <body>
@@ -1251,10 +1333,27 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="floorIntentModalBackdrop">
+  <div class="modal" style="width:min(640px,94vw);">
+    <h2>Add a floor</h2>
+    <p class="hint">Describe the repo(s) you want to add — a path or URL, and the agent if you have a preference.</p>
+    <div id="floorIntentConversation"></div>
+    <label for="floorIntentPromptInput">e.g. "add my smallcase-infra repo at ~/code/smallcase-infra, use Claude"</label>
+    <textarea id="floorIntentPromptInput" rows="2" placeholder="describe the repo(s) you want to add…"></textarea>
+    <div class="modal-actions">
+      <button onclick="closeFloorIntentModal()">× Cancel</button>
+      <button class="primary" id="floorIntentSubmitButton" onclick="submitFloorIntentPrompt()">➤ Parse</button>
+    </div>
+    <div class="field-note" id="floorIntentStatus" style="min-height:12px;"></div>
+    <div id="floorIntentResults"></div>
+    <p class="hint"><a href="#" onclick="openFloorIntentAdvanced();return false;">⚙ Advanced setup (all fields, or edit an existing floor) →</a></p>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="floorModalBackdrop">
   <div class="modal">
     <h2 id="floorModalTitle">New floor</h2>
-    <p class="hint">Choose the coding agent and tell it where the repository lives.</p>
+    <p class="hint">Advanced setup — choose the coding agent and tell it where the repository lives, or fine-tune a floor's permissions, MCP servers, and cupboard exclusions.</p>
     <div class="template-row" id="floorTemplateButtons"></div>
     <label for="floorName">Repository / floor name</label>
     <input id="floorName" type="text" placeholder="e.g. payments-api" maxlength="60">
@@ -1624,6 +1723,10 @@ const pendingFloorCalls = new Map();
 const dispatchingFloorCalls = new Set();
 let receptionRun = null;
 let dispatchingReception = false;
+let floorIntentRun = null;
+let floorIntentBusy = false;
+let floorIntentConversation = [];
+let floorIntentPending = [];
 let agentServiceRunTypes = null;
 let availableOfficePlugins = [];
 let reviewDiffData = [];
@@ -3321,7 +3424,7 @@ function renderFloorTabs(){
     return `<div class="floor-tab ${f.id===currentFloorId?'active':''}" data-floor-id="${f.id}" data-floor-number="${String(index+1).padStart(2,'0')}F" onclick="switchFloor('${f.id}')">
       ${escapeHtml(f.name)} ${f.agent ? `<span class="agent-mini">${escapeHtml(f.agent)}</span>` : ''} <span class="n">${n}</span>
     </div>`;
-  }).join('') + `<div class="floor-tab-add" onclick="openFloorModal()">＋ floor</div>`;
+  }).join('') + `<div class="floor-tab-add" onclick="openFloorIntentModal()">＋ floor</div>`;
 }
 
 function reviewRepositoryKey(floor){
@@ -3752,6 +3855,262 @@ async function selectCloneParentFolder(){
   if(selected){
     selectedCloneParent = selected;
     updateCloneDestination();
+  }
+}
+/* floor intent (AI-native floor creation, spec-doc.md section 10) */
+function openFloorIntentModal(){
+  floorIntentConversation = [];
+  floorIntentPending = [];
+  floorIntentBusy = false;
+  document.getElementById('floorIntentConversation').innerHTML = '';
+  document.getElementById('floorIntentPromptInput').value = '';
+  document.getElementById('floorIntentResults').innerHTML = '';
+  renderFloorIntentStatus('');
+  document.getElementById('floorIntentModalBackdrop').classList.add('open');
+  setTimeout(()=>document.getElementById('floorIntentPromptInput').focus(),50);
+}
+function closeFloorIntentModal(){
+  document.getElementById('floorIntentModalBackdrop').classList.remove('open');
+}
+function openFloorIntentAdvanced(){
+  closeFloorIntentModal();
+  openFloorModal();
+}
+function renderFloorIntentStatus(text){
+  const el = document.getElementById('floorIntentStatus');
+  if(el) el.textContent = text || '';
+}
+function appendFloorIntentConversationEntry(role, text){
+  const log = document.getElementById('floorIntentConversation');
+  if(!log || !text) return;
+  const div = document.createElement('div');
+  div.className = 'field-note';
+  div.style.marginTop = '0';
+  div.textContent = `${role==='user' ? 'You' : 'Office'}: ${text}`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+function floorIntentModeLabel(mode){
+  return { local:'existing-repo floor', clone:'clone floor', cupboard:'cupboard floor' }[mode] || mode;
+}
+function submitFloorIntentPrompt(){
+  const input = document.getElementById('floorIntentPromptInput');
+  const text = input.value.trim();
+  if(!text || floorIntentBusy || floorIntentRun) return;
+  floorIntentConversation.push({role:'user', text});
+  appendFloorIntentConversationEntry('user', text);
+  input.value = '';
+  document.getElementById('floorIntentResults').innerHTML = '';
+  floorIntentPending = [];
+  runFloorIntentParse();
+}
+function floorIntentPrompt(){
+  return [
+    'Extract floor-creation intent from this conversation for a software office that onboards one repository per floor.',
+    'Return only what is explicitly stated. Never guess a repository path if none is given, and never decide whether a path is local, a clone target, or a cupboard folder of repositories — that is resolved deterministically elsewhere.',
+    'One message may name multiple repositories; return one entry per repository.',
+    floorIntentConversation.map(entry=>`${entry.role==='user' ? 'User' : 'Office'}: ${entry.text}`).join('\n')
+  ].join('\n\n');
+}
+async function runFloorIntentParse(){
+  if(floorIntentBusy || floorIntentRun) return;
+  floorIntentBusy = true;
+  renderFloorIntentStatus('Reading…');
+  try{
+    const response = await fetch('/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        profileId:'floor_intent', runType:'floor_intent', agent: reception.agent || 'codex',
+        task:'Parse floor creation intent', prompt: floorIntentPrompt(), repository:{mode:'office'}
+      })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Agent service returned ${response.status}`);
+    floorIntentRun = { startedAt: data.startedAt };
+  }catch(e){
+    renderFloorIntentStatus(`Could not parse: ${e.message || e}`);
+    floorIntentBusy = false;
+  }
+}
+async function syncFloorIntent(){
+  if(!floorIntentRun) return;
+  try{
+    const response = await fetch('/api/logs?profileId=floor_intent&since=999999999', { cache:'no-store' });
+    if(!response.ok) return;
+    const data = await response.json();
+    if(data.status==='idle' || (data.startedAt && data.startedAt!==floorIntentRun.startedAt)){
+      renderFloorIntentStatus('The local service restarted before parsing finished. Try again.');
+      floorIntentRun = null; floorIntentBusy = false;
+      return;
+    }
+    if(data.runType!=='floor_intent' || data.startedAt!==floorIntentRun.startedAt) return;
+    if(data.status==='completed' && data.result){
+      floorIntentRun = null; floorIntentBusy = false;
+      await resolveFloorIntentResult(data.result);
+    }else if(data.status==='failed' || (data.status==='completed' && !data.result)){
+      renderFloorIntentStatus(`Could not parse: ${data.errorMessage || 'no result returned'}`);
+      floorIntentRun = null; floorIntentBusy = false;
+    }
+  }catch(e){ /* retry on the next poll */ }
+}
+async function resolveFloorIntentResult(result){
+  const floorsIn = Array.isArray(result.floors) ? result.floors : [];
+  if(!floorsIn.length){
+    const question = result.unresolved || 'Which folder or repository URL should this floor use?';
+    appendFloorIntentConversationEntry('assistant', question);
+    floorIntentPending = [];
+    renderFloorIntentAmbiguous(question);
+    return;
+  }
+  renderFloorIntentStatus('Checking the filesystem…');
+  try{
+    const response = await fetch('/api/floor-intent-resolve', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(result)
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || `Resolution returned ${response.status}`);
+    applyFloorIntentResolution(data);
+  }catch(e){
+    renderFloorIntentStatus(`Could not resolve paths: ${e.message || e}`);
+  }
+}
+function applyFloorIntentResolution(data){
+  renderFloorIntentStatus('');
+  const floorsOut = Array.isArray(data.floors) ? data.floors : [];
+  appendFloorIntentConversationEntry('assistant', floorsOut.map(f=>f.resolution && f.resolution.summary).filter(Boolean).join(' · ') || 'Could not resolve any floors.');
+  floorIntentPending = floorsOut.map(floor=>{
+    const resolution = floor.resolution || { mode:'unresolved', summary:'Could not resolve this floor.' };
+    return {
+      localId: uid('floorintent'),
+      raw: floor.raw_path_or_url || '',
+      agent: ['claude','codex'].includes(floor.agent) ? floor.agent : (reception.agent==='codex' ? 'codex' : 'claude'),
+      leadName: floor.lead_name || '',
+      floorName: floor.floor_name || repositoryFolderName(floor.raw_path_or_url || resolution.resolved_path || resolution.url || '') || 'new-floor',
+      mode: resolution.mode,
+      resolvedPath: resolution.resolved_path || '',
+      url: resolution.url || floor.raw_path_or_url || '',
+      repositories: Array.isArray(resolution.repositories) ? resolution.repositories : [],
+      summary: resolution.summary || '',
+      cloneDirectory: ''
+    };
+  });
+  renderFloorIntentPending();
+}
+function renderFloorIntentAmbiguous(question){
+  document.getElementById('floorIntentResults').innerHTML = `<div class="field-group">
+    <div class="field-note" style="margin-top:0;">${escapeHtml(question)}</div>
+    <input type="text" id="floorIntentTopReply" placeholder="reply…">
+    <div class="modal-actions"><button onclick="replyFloorIntentTop()">➤ Send</button></div>
+  </div>`;
+}
+function replyFloorIntentTop(){
+  const input = document.getElementById('floorIntentTopReply');
+  const text = input.value.trim();
+  if(!text) return;
+  floorIntentConversation.push({role:'user', text});
+  appendFloorIntentConversationEntry('user', text);
+  document.getElementById('floorIntentResults').innerHTML = '';
+  runFloorIntentParse();
+}
+function replyFloorIntent(index){
+  const input = document.getElementById(`floorIntentReply${index}`);
+  const text = input.value.trim();
+  if(!text) return;
+  floorIntentConversation.push({role:'user', text});
+  appendFloorIntentConversationEntry('user', text);
+  floorIntentPending = [];
+  document.getElementById('floorIntentResults').innerHTML = '';
+  runFloorIntentParse();
+}
+function renderFloorIntentPending(){
+  const container = document.getElementById('floorIntentResults');
+  if(!floorIntentPending.length){ container.innerHTML = ''; return; }
+  const blocks = floorIntentPending.map((item,index)=>{
+    if(item.mode==='ambiguous' || item.mode==='unresolved'){
+      return `<div class="field-group">
+        <div class="field-note" style="margin-top:0;">${escapeHtml(item.summary || 'Which folder or repository URL is this?')}</div>
+        <input type="text" id="floorIntentReply${index}" placeholder="reply…">
+        <div class="modal-actions"><button onclick="replyFloorIntent(${index})">➤ Send</button></div>
+      </div>`;
+    }
+    return `<div class="field-group">
+      <div class="field-note" style="margin-top:0;">${escapeHtml(item.summary)} → ${floorIntentModeLabel(item.mode)}, ${escapeHtml(item.agent)}, lead ${item.leadName ? escapeHtml(item.leadName) : 'unnamed'}. <b>Go?</b></div>
+      <label>Floor name</label>
+      <input type="text" value="${escapeHtml(item.floorName)}" oninput="floorIntentPending[${index}].floorName=this.value">
+      <label>Agent</label>
+      <select onchange="floorIntentPending[${index}].agent=this.value">
+        <option value="claude" ${item.agent==='claude'?'selected':''}>Claude</option>
+        <option value="codex" ${item.agent==='codex'?'selected':''}>Codex</option>
+      </select>
+      <label>Tech lead name</label>
+      <input type="text" value="${escapeHtml(item.leadName)}" placeholder="required before Go" oninput="floorIntentPending[${index}].leadName=this.value">
+      <label>Detected mode</label>
+      <select onchange="floorIntentPending[${index}].mode=this.value;renderFloorIntentPending();">
+        <option value="local" ${item.mode==='local'?'selected':''}>Existing local repository</option>
+        <option value="clone" ${item.mode==='clone'?'selected':''}>Clone into a directory</option>
+        <option value="cupboard" ${item.mode==='cupboard'?'selected':''}>Cupboard (folder of repositories)</option>
+      </select>
+      ${item.mode==='clone' ? `<label>Clone destination</label><div class="path-picker"><input type="text" id="floorIntentClone${index}" value="${escapeHtml(item.cloneDirectory)}" oninput="floorIntentPending[${index}].cloneDirectory=this.value"><button type="button" onclick="pickFloorIntentCloneDestination(${index})">📁 Select</button></div>` : ''}
+      ${item.mode==='cupboard' && item.repositories.length ? `<div class="field-note">${item.repositories.length} repositor${item.repositories.length===1?'y':'ies'} found; re-checked when this floor is built.</div>` : ''}
+      <div class="modal-actions"><button class="primary" onclick="confirmFloorIntentFloor(${index})">▣ Go</button></div>
+    </div>`;
+  }).join('');
+  const resolvedCount = floorIntentPending.filter(item=>['local','clone','cupboard'].includes(item.mode)).length;
+  const combined = resolvedCount>1
+    ? `<div class="modal-actions" style="margin-bottom:10px;"><button class="primary" onclick="confirmAllFloorIntent()">▣ Go for all ${resolvedCount} floors</button></div>`
+    : '';
+  container.innerHTML = combined + blocks;
+}
+async function pickFloorIntentCloneDestination(index){
+  const item = floorIntentPending[index];
+  if(!item) return;
+  const selected = await selectLocalDirectory('Select the parent folder for the clone', item.cloneDirectory || '');
+  if(!selected) return;
+  const separator = selected.includes('\\') && !selected.includes('/') ? '\\' : '/';
+  item.cloneDirectory = selected.replace(/[\\/]+$/,'') + separator + repositoryFolderName(item.url || item.raw);
+  const input = document.getElementById(`floorIntentClone${index}`);
+  if(input) input.value = item.cloneDirectory;
+}
+async function confirmFloorIntentFloor(index){
+  const item = floorIntentPending[index];
+  if(!item) return;
+  if(!item.floorName){ window.alert('Give this floor a name first.'); return; }
+  if(!['claude','codex'].includes(item.agent)){ window.alert('Choose Claude or Codex for this floor first.'); return; }
+  if(!item.leadName){ window.alert('Name a tech lead for this floor first.'); return; }
+  if(item.mode==='clone' && !item.cloneDirectory){ window.alert('Choose a clone destination first.'); return; }
+  if(item.mode!=='clone' && !item.resolvedPath){ window.alert('This floor needs a resolved local path first.'); return; }
+
+  editingFloorId = null;
+  document.getElementById('floorName').value = item.floorName;
+  document.getElementById('floorAgent').value = item.agent;
+  document.getElementById('techLeadName').value = item.leadName;
+  document.getElementById('floorReviewPolicy').value = 'always_review';
+  document.getElementById('floorDestinationBranch').value = 'main';
+  document.getElementById('permissionFileEdits').checked = false;
+  document.getElementById('permissionShell').checked = false;
+  document.getElementById('permissionNetwork').checked = false;
+  document.getElementById('permissionExternal').checked = false;
+  document.getElementById('floorTokenWarning').value = 150000;
+  document.getElementById('floorInputPrice').value = 0;
+  document.getElementById('floorOutputPrice').value = 0;
+  document.getElementById('floorMcpServers').value = '[]';
+  document.getElementById('floorPluginPaths').value = '';
+  document.getElementById('repoMode').value = item.mode==='clone' ? 'clone' : 'local';
+  document.getElementById('localRepoPath').value = item.mode==='clone' ? '' : item.resolvedPath;
+  document.getElementById('floorHasCupboards').checked = item.mode==='cupboard';
+  document.getElementById('cloneRepoUrl').value = item.mode==='clone' ? item.url : '';
+  document.getElementById('cloneDirectory').value = item.mode==='clone' ? item.cloneDirectory : '';
+  updateRepoFields();
+  updateCupboardField();
+
+  floorIntentPending = floorIntentPending.filter((_,i)=>i!==index);
+  renderFloorIntentPending();
+  await submitFloorModal();
+  if(!floorIntentPending.length) closeFloorIntentModal();
+}
+async function confirmAllFloorIntent(){
+  for(let i=floorIntentPending.length-1;i>=0;i--){
+    if(['local','clone','cupboard'].includes(floorIntentPending[i].mode)) await confirmFloorIntentFloor(i);
   }
 }
 function openFloorModal(id){
@@ -5228,7 +5587,7 @@ function receptionNewFloor(){
     note: document.getElementById('receptionTaskNote').value.trim()
   };
   closeReceptionModal();
-  openFloorModal();
+  openFloorIntentModal();
 }
 function receptionPrompt(request){
   const catalog = floors.filter(floor=>floor.onboardingStatus==='ready' && launchCommand(floor)).map(floor=>({
@@ -5359,7 +5718,7 @@ async function submitReceptionModal(){
     pendingReception = { title, note };
     closeReceptionModal();
     window.alert('Build and onboard at least one floor before reception can route work.');
-    openFloorModal();
+    openFloorIntentModal();
     return;
   }
   reception.agent = document.getElementById('receptionAgent').value;
@@ -5534,6 +5893,7 @@ setInterval(dispatchAllFloorReports, 2000);
 setInterval(dispatchAllFloorCalls, 2000);
 setInterval(syncFloorCalls, 2000);
 setInterval(syncReception, 2000);
+setInterval(syncFloorIntent, 1500);
 setInterval(checkAgentService, 15000);
 
 for(const eventName of ['pointerdown','pointermove','keydown'])document.addEventListener(eventName,()=>{lastOfficeInteractionAt=Date.now();document.body.classList.remove('screensaver');},{passive:true});

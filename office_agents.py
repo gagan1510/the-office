@@ -43,7 +43,7 @@ class CodexAdapter(AgentAdapter):
     def command(self, executable: str, repository: Path, prompt: str, run_type: str, **options) -> list[str]:
         session_id = options.get("session_id")
         schema_path, output_path = options.get("schema_path"), options.get("output_path")
-        structured = run_type in ("onboard", "plan", "review", "orchestrate", "report", "reception", "floor_call")
+        structured = run_type in ("onboard", "plan", "review", "orchestrate", "report", "reception", "floor_call", "floor_intent")
         if session_id:
             command = [executable, "exec", "resume", "--json"]
             if structured:
@@ -51,7 +51,7 @@ class CodexAdapter(AgentAdapter):
             return command + [session_id, prompt]
         command = [executable, "exec", "--json"]
         options["add_codex_mcp_overrides"](command, options.get("mcp_servers") or [])
-        if run_type in ("onboard", "plan", "review", "chat", "question", "report", "reception", "floor_call"):
+        if run_type in ("onboard", "plan", "review", "chat", "question", "report", "reception", "floor_call", "floor_intent"):
             command += ["--sandbox", "read-only"]
             if run_type == "chat" or options.get("allow_non_git"):
                 command += ["--skip-git-repo-check"]
@@ -63,7 +63,7 @@ class CodexAdapter(AgentAdapter):
                 command += ["--skip-git-repo-check"]
             if run_type == "orchestrate":
                 command += ["--output-schema", schema_path, "-o", output_path]
-        if run_type in ("reception", "plan", "review"):
+        if run_type in ("reception", "plan", "review", "floor_intent"):
             model = os.environ.get("TASK_OFFICE_CODEX_CLASSIFIER_MODEL", "gpt-5.1-codex-mini").strip()
             if model:
                 command += ["--model", model]
@@ -91,20 +91,24 @@ class ClaudeAdapter(AgentAdapter):
 
     def command(self, executable: str, repository: Path, prompt: str, run_type: str, **options) -> list[str]:
         command = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode"]
-        command += ["plan" if run_type in ("onboard", "plan", "review", "chat", "question", "report", "reception", "floor_call") else "acceptEdits"]
+        command += ["plan" if run_type in ("onboard", "plan", "review", "chat", "question", "report", "reception", "floor_call", "floor_intent") else "acceptEdits"]
         if run_type == "chat": command += ["--tools", ""]
         if run_type in options["lightweight_run_types"]:
             settings = json.dumps({"disableAllHooks": True, "disableBundledSkills": True, "autoMemoryEnabled": False}, separators=(",", ":"))
-            command += ["--settings", settings, "--strict-mcp-config", "--mcp-config", "{}"]
+            # Claude validates --mcp-config as an MCP config document, even when
+            # strict mode intentionally disables every server for classifier runs.
+            # An empty object has no mcpServers record and newer CLIs reject it.
+            empty_mcp_config = json.dumps({"mcpServers": {}}, separators=(",", ":"))
+            command += ["--settings", settings, "--strict-mcp-config", "--mcp-config", empty_mcp_config]
         else:
             command += ["--settings", json.dumps(options["plugin_settings"], separators=(",", ":"))]
             servers = options.get("mcp_servers") or []
             if servers: command += ["--strict-mcp-config", "--mcp-config", json.dumps(options["claude_mcp_config"](servers), separators=(",", ":"))]
             for path in options.get("plugin_paths") or []: command += ["--plugin-dir", path]
-        if run_type in ("reception", "plan", "review"):
+        if run_type in ("reception", "plan", "review", "floor_intent"):
             model = os.environ.get("TASK_OFFICE_CLAUDE_CLASSIFIER_MODEL", "haiku").strip()
             if model: command += ["--model", model]
-        if run_type in ("onboard", "plan", "review", "orchestrate", "report", "reception", "floor_call"):
+        if run_type in ("onboard", "plan", "review", "orchestrate", "report", "reception", "floor_call", "floor_intent"):
             command += ["--json-schema", json.dumps(options.get("output_schema"))]
         if options.get("session_id"): command += ["--resume", options["session_id"]]
         return command

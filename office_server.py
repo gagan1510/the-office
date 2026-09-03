@@ -34,14 +34,14 @@ MAX_BODY = 1_000_000
 MAX_STATE_BODY = 20_000_000
 SUPPORTED_RUN_TYPES = (
     "work", "chat", "question", "onboard", "plan", "review", "orchestrate",
-    "report", "reception", "floor_call",
+    "report", "reception", "floor_call", "floor_intent",
 )
 MAX_LOG_LINES = 5000
 MAX_DIFF_BYTES = 4_000_000
 MAX_FILE_CONTEXT_BYTES = 64_000
 MAX_MCP_SERVERS = 20
 PERSISTENT_RUN_TYPES = frozenset({"work", "plan", "question", "chat", "orchestrate", "review", "floor_call"})
-LIGHTWEIGHT_RUN_TYPES = frozenset({"reception", "plan", "review", "floor_call"})
+LIGHTWEIGHT_RUN_TYPES = frozenset({"reception", "plan", "review", "floor_call", "floor_intent"})
 ACTIVE_RUN_STATUSES = frozenset({"starting", "running", "waiting_for_lock", "awaiting_approval"})
 lock = threading.RLock()
 clone_lock = threading.Lock()
@@ -347,6 +347,30 @@ FLOOR_CALL_SCHEMA = {
         "answer": {"type": "string"},
         "considerations": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
         "relevant_files": {"type": "array", "items": {"type": "string"}, "maxItems": 30},
+    },
+}
+
+FLOOR_INTENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["floors", "unresolved"],
+    "properties": {
+        "floors": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["raw_path_or_url", "agent", "lead_name", "floor_name"],
+                "properties": {
+                    "raw_path_or_url": {"type": "string"},
+                    "agent": {"type": ["string", "null"], "enum": ["claude", "codex", None]},
+                    "lead_name": {"type": ["string", "null"]},
+                    "floor_name": {"type": ["string", "null"]},
+                },
+            },
+        },
+        "unresolved": {"type": ["string", "null"]},
     },
 }
 
@@ -1009,6 +1033,87 @@ def discover_git_repositories(root: Path, max_depth: int = 6) -> list[Path]:
         if depth >= max_depth:
             directory_names[:] = []
     return sorted(set(found), key=lambda value: str(value.relative_to(root)).lower())
+
+
+GIT_URL_HOST_PATTERN = re.compile(r"(github\.com|gitlab\.com|bitbucket\.org)", re.IGNORECASE)
+MAX_FLOOR_INTENT_ITEMS = 20
+
+
+def looks_like_git_url(raw: str) -> bool:
+    """True when a raw floor-intent string is shaped like a clone target, not a local path."""
+    raw = raw.strip()
+    if not raw:
+        return False
+    if re.match(r"^\w+://", raw):
+        return True
+    if re.match(r"^[\w.-]+@[\w.-]+:", raw):  # scp-style, e.g. git@github.com:org/repo.git
+        return True
+    return bool(GIT_URL_HOST_PATTERN.search(raw))
+
+
+def resolve_floor_intent(raw_path_or_url: str) -> dict:
+    """Deterministically resolve a floor-intent path/URL fragment to a repo shape.
+
+    Never asks the model to decide local/clone/cupboard mode (spec 10.2) — this is a
+    plain filesystem inspection, reusing discover_git_repositories() for cupboard hits.
+    """
+    raw = str(raw_path_or_url or "").strip()
+    if not raw:
+        return {"mode": "unresolved", "raw": raw, "summary": "No path or URL was mentioned."}
+    if looks_like_git_url(raw):
+        return {"mode": "clone", "raw": raw, "url": raw, "summary": f"Clone `{raw}`"}
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    exists = path.exists()
+    resolved = path.resolve() if exists else path
+    if exists and resolved.is_dir():
+        if (resolved / ".git").exists():
+            return {
+                "mode": "local", "raw": raw, "resolved_path": str(resolved),
+                "summary": f"Found a git repo at `{resolved}`",
+            }
+        repositories = discover_git_repositories(resolved)
+        if repositories:
+            return {
+                "mode": "cupboard", "raw": raw, "resolved_path": str(resolved),
+                "repositories": [str(item) for item in repositories],
+                "summary": f"Found {len(repositories)} git repo(s) under `{resolved}` — treating it as a cupboard",
+            }
+        return {
+            "mode": "ambiguous", "raw": raw, "resolved_path": str(resolved), "repositories": [],
+            "summary": f"`{resolved}` has no git repos in it — is this a cupboard root, or a different path?",
+        }
+    return {
+        "mode": "unresolved", "raw": raw,
+        "summary": f"Couldn't find `{raw}` on disk — which folder did you mean?",
+    }
+
+
+def floor_intent_resolution(data: dict) -> dict:
+    """Apply resolve_floor_intent() per floor over a parsed FLOOR_INTENT_SCHEMA payload.
+
+    Handles the 10.5 multi-floor case: a single prompt may name several floors, so the
+    response is always an array of resolved entries, one per floor in the input list.
+    """
+    floors = data.get("floors")
+    if not isinstance(floors, list) or not floors:
+        raise ValueError("floors must be a non-empty list.")
+    if len(floors) > MAX_FLOOR_INTENT_ITEMS:
+        raise ValueError(f"At most {MAX_FLOOR_INTENT_ITEMS} floors can be resolved at once.")
+    resolved = []
+    for item in floors:
+        if not isinstance(item, dict):
+            raise ValueError("Each floor entry must be an object.")
+        raw = item.get("raw_path_or_url")
+        resolved.append({
+            "raw_path_or_url": raw,
+            "agent": item.get("agent"),
+            "lead_name": item.get("lead_name"),
+            "floor_name": item.get("floor_name"),
+            "resolution": resolve_floor_intent(str(raw) if raw is not None else ""),
+        })
+    return {"unresolved": data.get("unresolved"), "floors": resolved}
 
 
 def cupboard_repositories(data: dict) -> tuple[Path, list[Path]]:
@@ -1984,6 +2089,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             else REPORT_SCHEMA if run["runType"] == "report"
             else RECEPTION_SCHEMA if run["runType"] == "reception"
             else FLOOR_CALL_SCHEMA if run["runType"] == "floor_call"
+            else FLOOR_INTENT_SCHEMA if run["runType"] == "floor_intent"
             else None
         )
         if output_schema and agent_adapter.uses_structured_output_files():
@@ -2008,6 +2114,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             "report": ("researching", "Investigating for a report"),
             "reception": ("thinking", "Routing work across floors"),
             "floor_call": ("coordinating", "Consulting another floor"),
+            "floor_intent": ("thinking", "Reading the floor request"),
             "chat": ("thinking", "Writing a response"),
         }.get(run["runType"], ("thinking", "Starting the task"))
         set_activity(run, *initial_activity)
@@ -2099,6 +2206,8 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
                 raise RuntimeError("Reception returned an invalid routing plan.")
             if run["runType"] == "floor_call" and not isinstance(candidate.get("answer"), str):
                 raise RuntimeError("The consulted floor returned an invalid answer.")
+            if run["runType"] == "floor_intent" and not isinstance(candidate.get("floors"), list):
+                raise RuntimeError("Floor intent parsing returned an invalid floor list.")
             plan_result = candidate
         with lock:
             run["returncode"] = returncode
@@ -2416,6 +2525,9 @@ class OfficeHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/discover-repositories":
                 self.json_response(cupboard_manifest(data))
+                return
+            if parsed.path == "/api/floor-intent-resolve":
+                self.json_response(floor_intent_resolution(data))
                 return
             if parsed.path == "/api/select-directory":
                 self.json_response(select_directory(data))

@@ -2844,6 +2844,11 @@ async function syncChatRuns(){
   }
 }
 
+function openLeadCardActivity(event, floorId){
+  if(event.target.closest('button, a, input, select, textarea, summary, details, [role="button"]'))return;
+  openProfileLog('lead',floorId);
+}
+
 function logProfile(kind, id){
   if(kind==='worker'){
     const worker = workers.find(w=>w.id===id);
@@ -4001,7 +4006,7 @@ function renderManagerCard(){
   checkOnboardingDrift(floor);
   document.getElementById('managerCard').innerHTML = `
     <div class="manager-left">
-      <div class="person profile-link" onclick="openProfileLog('lead','${floor.id}')" title="View manager and tech lead agent activity" style="width:36px;height:46px;">
+      <div class="person profile-link" role="button" tabindex="0" aria-label="View ${escapeHtml(roleName)} live activity" onclick="openProfileLog('lead','${floor.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openProfileLog('lead','${floor.id}');}" title="View manager and tech lead agent activity" style="width:36px;height:46px;">
         <div class="hair" style="background:#211a2b;"></div>
         <div class="head" style="background:#e8b98b;"></div>
         <div class="torso" style="background:linear-gradient(90deg,var(--manager) 0 50%,var(--lead) 50%);"></div>
@@ -4043,6 +4048,7 @@ function renderManagerCard(){
     </div>
   `;
   document.getElementById('managerCard').classList.toggle('manager-thinking',onboarding||planning||reviewing||reporting||answering);
+  document.getElementById('managerCard').onclick=event=>openLeadCardActivity(event,floor.id);
 }
 function approveFloorSuggestion(floorId,identifier){openFloorModal(floorId);setTimeout(()=>approveToolSuggestion(identifier),0);}
 

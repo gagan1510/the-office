@@ -349,6 +349,9 @@ class GitSafetyTests(unittest.TestCase):
     def test_static_preview_is_available_through_the_office_origin(self):
         (self.repository / "index.html").write_text('<link rel="stylesheet" href="style.css"><h1>proxied</h1>')
         (self.repository / "style.css").write_text("h1{color:green}")
+        nested = self.repository / "posts" / "article"
+        nested.mkdir(parents=True)
+        (nested / "index.html").write_text("<h1>nested route</h1>")
 
         class QuietStaticHandler(SimpleHTTPRequestHandler):
             def __init__(handler_self, *args, **kwargs):
@@ -377,6 +380,8 @@ class GitSafetyTests(unittest.TestCase):
             with urllib.request.urlopen(base + "style.css", timeout=5) as response:
                 self.assertEqual(response.headers.get_content_type(), "text/css")
                 self.assertIn("green", response.read().decode())
+            with urllib.request.urlopen(base + "posts/article/", timeout=5) as response:
+                self.assertIn("nested route", response.read().decode())
             self.assertEqual(app.public_preview(app.preview_processes[floor_id])["previewUrl"], f"/api/previews/{floor_id}/view/")
         finally:
             app.preview_processes.pop(floor_id, None)
@@ -828,7 +833,20 @@ class VisualPolishTests(unittest.TestCase):
         self.assertNotIn('onclick="promoteLiveEdit()"', self.html)
 
     def test_preview_start_marks_the_frame_before_polling_to_avoid_duplicate_navigation(self):
-        self.assertIn("frame.dataset.port=String(data.port);frame.src=previewFrameUrl(data);pollFloorPreview()", self.html)
+        self.assertIn("frame.dataset.port=String(data.port);frame.dataset.path=", self.html)
+        self.assertIn("frame.src=previewFrameUrl(data);pollFloorPreview()", self.html)
+
+    def test_rendered_preview_has_internal_path_navigation(self):
+        for marker in (
+            'id="previewPath"', 'handlePreviewPathKey(event)', 'navigatePreviewPath()',
+            'normalizedPreviewPath', "target.pathname=requested.pathname",
+            "target.pathname.replace(/\\/?$/,'/')+requested.pathname",
+        ):
+            self.assertIn(marker, self.html)
+        self.assertIn(
+            "function handlePreviewPathKey(event){if(event.key==='Enter'){event.preventDefault();navigatePreviewPath();}}\nfunction showPreviewPane",
+            self.html,
+        )
 
     def test_ambient_and_personality_features_are_wired_to_rendered_state(self):
         for marker in (

@@ -8,7 +8,7 @@ It gives every onboarded project a persistent Manager & Tech Lead, a reusable te
 
 ## What the platform does
 
-- Onboards an existing Git repository, clones a remote repository, or groups several repositories into one project floor.
+- Onboards an existing Git repository, clones a remote repository, groups several repositories into one project floor, or creates a brand-new app from a refined text brief.
 - Builds durable context about architecture, conventions, tests, risks, and important files before accepting implementation work.
 - Routes a task to the correct project or projects through reception, then lets each project lead plan the work.
 - Reuses persistent Claude Code or Codex sessions so project knowledge carries across questions, reports, and tasks.
@@ -16,6 +16,8 @@ It gives every onboarded project a persistent Manager & Tech Lead, a reusable te
 - Captures live activity, logs, changed files, test results, token usage, and task history.
 - Creates a recoverable Git checkpoint before implementation and retains an immutable completion snapshot.
 - Presents the real working-tree diff for review, including selectable hunks, before anything is published.
+- Runs a floor's app in an embedded live preview, streams its console, and provides a small OpenAPI-aware backend request tester.
+- Converts every change requested from live preview into a floor employee task with ordinary checkpoints and review; preview never edits through a privileged direct-agent path.
 - Keeps rejected edits local and allows a completed run to be restored to its pre-run checkpoint.
 - Pushes a task branch and opens GitHub pull requests only after explicit confirmation.
 - Stores floors, project context, conversations, runs, logs, and settings in a local SQLite database.

@@ -11,6 +11,8 @@ import os
 import re
 import shlex
 import shutil
+import signal
+import socket
 import sqlite3
 import subprocess
 import tempfile
@@ -21,6 +23,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from office_backend.agents import adapter_for
 from office_backend.db import open_database
@@ -34,14 +38,14 @@ MAX_BODY = 1_000_000
 MAX_STATE_BODY = 20_000_000
 SUPPORTED_RUN_TYPES = (
     "work", "chat", "question", "onboard", "plan", "review", "orchestrate",
-    "report", "reception", "floor_call", "floor_intent",
+    "report", "reception", "floor_call", "floor_intent", "app_brief",
 )
 MAX_LOG_LINES = 5000
 MAX_DIFF_BYTES = 4_000_000
 MAX_FILE_CONTEXT_BYTES = 64_000
 MAX_MCP_SERVERS = 20
-PERSISTENT_RUN_TYPES = frozenset({"work", "plan", "question", "chat", "orchestrate", "review", "floor_call"})
-LIGHTWEIGHT_RUN_TYPES = frozenset({"reception", "plan", "review", "floor_call", "floor_intent"})
+PERSISTENT_RUN_TYPES = frozenset({"work", "plan", "question", "chat", "orchestrate", "review", "floor_call", "app_brief"})
+LIGHTWEIGHT_RUN_TYPES = frozenset({"reception", "plan", "review", "floor_call", "floor_intent", "app_brief"})
 ACTIVE_RUN_STATUSES = frozenset({"starting", "running", "waiting_for_lock", "awaiting_approval"})
 lock = threading.RLock()
 clone_lock = threading.Lock()
@@ -49,6 +53,9 @@ path_lock_condition = threading.Condition(threading.RLock())
 active_path_claims: list[tuple[str, str, str]] = []
 runs: dict[str, dict] = {}
 shell_jobs: dict[str, dict] = {}
+preview_processes: dict[str, dict] = {}
+live_edit_sessions: dict[str, dict] = {}
+preview_launch_lock = threading.Lock()
 database_lock = threading.RLock()
 database: sqlite3.Connection | None = None
 
@@ -132,6 +139,33 @@ def initialize_database() -> None:
             text TEXT NOT NULL,
             PRIMARY KEY (run_id, sequence)
         );
+        CREATE TABLE IF NOT EXISTS preview_processes (
+            floor_id TEXT PRIMARY KEY,
+            pid INTEGER NOT NULL,
+            port INTEGER NOT NULL,
+            command TEXT NOT NULL,
+            repository TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            process_token TEXT
+        );
+        CREATE TABLE IF NOT EXISTS preview_settings (
+            floor_id TEXT PRIMARY KEY,
+            command TEXT,
+            app_path TEXT,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS live_edit_sessions (
+            id TEXT PRIMARY KEY,
+            floor_id TEXT NOT NULL,
+            repository_json TEXT NOT NULL,
+            checkpoint_ref TEXT NOT NULL,
+            edit_log_json TEXT NOT NULL,
+            steps_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER
+        );
         """
     )
     # SQLite has no IF NOT EXISTS form for ADD COLUMN. Keep upgrades from older
@@ -152,6 +186,15 @@ def initialize_database() -> None:
     for column, definition in migrations.items():
         if column not in existing_columns:
             connection.execute(f"ALTER TABLE agent_runs ADD COLUMN {column} {definition}")
+    preview_columns = {row["name"] for row in connection.execute("PRAGMA table_info(preview_processes)").fetchall()}
+    if "process_token" not in preview_columns:
+        connection.execute("ALTER TABLE preview_processes ADD COLUMN process_token TEXT")
+    preview_setting_columns = {row["name"] for row in connection.execute("PRAGMA table_info(preview_settings)").fetchall()}
+    if "app_path" not in preview_setting_columns:
+        connection.execute("ALTER TABLE preview_settings ADD COLUMN app_path TEXT")
+    live_edit_columns = {row["name"] for row in connection.execute("PRAGMA table_info(live_edit_sessions)").fetchall()}
+    if "steps_json" not in live_edit_columns:
+        connection.execute("ALTER TABLE live_edit_sessions ADD COLUMN steps_json TEXT NOT NULL DEFAULT '[]'")
     try:
         DATABASE_PATH.chmod(0o600)
     except OSError:
@@ -169,6 +212,7 @@ def initialize_database() -> None:
             (interrupted_at, interrupted_at),
         )
         connection.commit()
+    cleanup_orphaned_previews()
     if existed:
         create_database_backup()
 
@@ -371,6 +415,18 @@ FLOOR_INTENT_SCHEMA = {
             },
         },
         "unresolved": {"type": ["string", "null"]},
+    },
+}
+
+APP_BRIEF_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["ready", "summary", "questions", "refined_brief"],
+    "properties": {
+        "ready": {"type": "boolean"},
+        "summary": {"type": "string"},
+        "questions": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+        "refined_brief": {"type": "string"},
     },
 }
 
@@ -1077,6 +1133,8 @@ def resolve_floor_intent(raw_path_or_url: str) -> dict:
     plain filesystem inspection, reusing discover_git_repositories() for cupboard hits.
     """
     raw = str(raw_path_or_url or "").strip()
+    if raw.startswith(r"\~"):
+        raw = raw[1:]
     if not raw:
         return {"mode": "unresolved", "raw": raw, "summary": "No path or URL was mentioned."}
     if looks_like_git_url(raw):
@@ -1110,6 +1168,55 @@ def resolve_floor_intent(raw_path_or_url: str) -> dict:
     return {
         "mode": "unresolved", "raw": raw,
         "summary": f"Couldn't find `{raw}` on disk — which folder did you mean?",
+    }
+
+
+def parse_floor_intent_locally(messages: object) -> dict | None:
+    """Parse explicit floor paths and agent choices without an LLM round trip.
+
+    This deliberately handles only high-confidence syntax. Ambiguous prose still
+    falls through to the configured classifier.
+    """
+    if isinstance(messages, str):
+        text = messages
+    elif isinstance(messages, list):
+        parts = []
+        for item in messages[-20:]:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        text = "\n".join(parts)
+    else:
+        raise ValueError("Floor intent messages must be text or a list of messages.")
+    text = text.strip()
+    if not text or len(text) > 20_000:
+        return None
+    url_pattern = r"(?:https?://|ssh://|git@)[^\s,;]+"
+    path_pattern = r"(?<![A-Za-z0-9])(?:\\?~[/\\]|\.{1,2}[/\\]|/)[^\s,;]+"
+    raw_values = re.findall(f"(?:{url_pattern}|{path_pattern})", text, flags=re.IGNORECASE)
+    paths = []
+    for value in raw_values:
+        value = value.rstrip(".!?)]}'\"")
+        if value.startswith(r"\~"):
+            value = value[1:]
+        if value and value not in paths:
+            paths.append(value)
+    if not paths:
+        return None
+    agent_mentions = set(re.findall(r"(?i)\b(claude|codex)\b", text))
+    # One explicit agent can safely apply to every listed floor. Multiple agent
+    # mentions need the classifier to understand which path each belongs to.
+    if len(agent_mentions) > 1:
+        return None
+    agent = next(iter(agent_mentions)).lower() if agent_mentions else None
+    lead_match = re.search(r"(?i)\b(?:lead|manager)\s+(?:is|named|called)\s+([A-Za-z][A-Za-z .'-]{0,60})", text)
+    floor_match = re.search(r"(?i)\b(?:floor|project)\s+(?:named|called)\s+([A-Za-z0-9][A-Za-z0-9 ._-]{0,60})", text)
+    return {
+        "floors": [{
+            "raw_path_or_url": path, "agent": agent,
+            "lead_name": lead_match.group(1).strip(" .,") if lead_match else None,
+            "floor_name": floor_match.group(1).strip(" .,") if floor_match and len(paths) == 1 else None,
+        } for path in paths],
+        "unresolved": None,
     }
 
 
@@ -1148,6 +1255,75 @@ def floor_intent_resolution(data: dict) -> dict:
             "resolution": resolve_floor_intent(str(raw) if raw is not None else ""),
         })
     return {"unresolved": unresolved, "floors": resolved}
+
+
+def create_new_app_workspace(data: dict) -> dict:
+    """Create a new, baseline Git workspace containing the user-approved app brief."""
+    name = str(data.get("name", "")).strip()
+    raw_destination = str(data.get("destination", "")).strip()
+    brief = str(data.get("brief", "")).strip()
+    source_name = str(data.get("sourceName", "")).strip()
+    if not name or len(name) > 120:
+        raise ValueError("A new app needs a name of at most 120 characters.")
+    if not brief:
+        raise ValueError("Describe the app before creating its floor.")
+    if len(brief) > 750_000:
+        raise ValueError("The app brief is too large (750 KB maximum).")
+    destination = Path(raw_destination)
+    if not destination.is_absolute():
+        raise ValueError("The new app destination must be an absolute path.")
+    destination = destination.resolve()
+    parent = destination.parent
+    if not parent.is_dir():
+        raise ValueError("The destination's parent folder must already exist.")
+    if destination == parent or destination == Path(destination.anchor):
+        raise ValueError("Choose a dedicated folder for the new app.")
+    if destination.exists():
+        if not destination.is_dir():
+            raise ValueError("The destination exists and is not a folder.")
+        if any(destination.iterdir()):
+            raise ValueError("The new app destination must not exist or must be empty.")
+    else:
+        destination.mkdir()
+    git = shutil.which("git")
+    if not git:
+        raise RuntimeError("git is not installed or is not on PATH.")
+    initialized = subprocess.run(
+        [git, "init", "-b", "main", str(destination)], text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30, check=False,
+    )
+    if initialized.returncode:
+        initialized = subprocess.run(
+            [git, "init", str(destination)], text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=30, check=False,
+        )
+        if initialized.returncode:
+            raise RuntimeError(f"git init failed: {initialized.stdout.strip()}")
+        subprocess.run(
+            [git, "-C", str(destination), "branch", "-M", "main"],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30, check=False,
+        )
+    safe_source = re.sub(r"[^A-Za-z0-9._ -]+", "", Path(source_name).name)[:160]
+    header = f"# {name} — app brief\n\n"
+    if safe_source:
+        header += f"Source document: `{safe_source}`\n\n"
+    brief_path = destination / "APP_BRIEF.md"
+    brief_path.write_text(header + brief.rstrip() + "\n", encoding="utf-8")
+    staged = subprocess.run(
+        [git, "-C", str(destination), "-c", "user.name=The Office",
+         "-c", "user.email=office@localhost", "add", "--", "APP_BRIEF.md"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30, check=False,
+    )
+    if staged.returncode:
+        raise RuntimeError(f"Could not stage the initial app brief: {staged.stdout.strip()}")
+    committed = subprocess.run(
+        [git, "-C", str(destination), "-c", "user.name=The Office",
+         "-c", "user.email=office@localhost", "commit", "-m", "Add initial app brief"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30, check=False,
+    )
+    if committed.returncode:
+        raise RuntimeError(f"Could not create the initial app brief commit: {committed.stdout.strip()}")
+    return {"ok": True, "path": str(destination), "briefPath": "APP_BRIEF.md", "branch": "main"}
 
 
 def cupboard_repositories(data: dict) -> tuple[Path, list[Path]]:
@@ -1705,6 +1881,679 @@ def repository_commands(root: Path) -> list[dict]:
     return [item for item in commands if not (item["command"] in seen or seen.add(item["command"]))][:30]
 
 
+PREVIEW_PORT_MIN = max(1024, int(os.environ.get("TASK_OFFICE_PREVIEW_PORT_MIN", "43100")))
+PREVIEW_PORT_MAX = min(65535, int(os.environ.get("TASK_OFFICE_PREVIEW_PORT_MAX", "43199")))
+PREVIEW_START_TIMEOUT = max(5.0, min(120.0, float(os.environ.get("TASK_OFFICE_PREVIEW_START_TIMEOUT", "45"))))
+PREVIEW_LOG_LIMIT = 5000
+PORT_PATTERNS = (
+    re.compile(r"(?i)\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(?P<port>\d{2,5})\b"),
+    re.compile(r"(?i)\b(?:listening|running|started|server).*?\bport\s*[:=]?\s*(?P<port>\d{2,5})\b"),
+)
+
+
+def package_preview_command(script_name: str, script_body: str) -> str:
+    """Build an npm launch command that binds supported dev servers to $PORT."""
+    base = f"npm run {shlex.quote(script_name)}"
+    body = str(script_body or "").lower()
+    if re.search(r"(?:^|[;&|\s])next(?:\s|$)", body):
+        return f'{base} -- --hostname 127.0.0.1 --port "$PORT"'
+    if "react-scripts" in body:
+        # Create React App reads HOST and PORT and rejects Vite-style flags.
+        return base
+    if any(marker in body for marker in (
+        "vite", "astro", "nuxt", "ng serve", "webpack serve", "webpack-dev-server",
+        "gatsby develop", "parcel", "remix vite:dev", "svelte-kit",
+    )):
+        return f'{base} -- --host 127.0.0.1 --port "$PORT"'
+    if re.search(r"(?:^|\s)http-server(?:\s|$)", body):
+        return f'{base} -- --port "$PORT"'
+    if re.search(r"(?:^|\s)serve(?:\s|$)", body):
+        return f'{base} -- --listen "$PORT"'
+    return base
+
+
+def managed_preview_command(root: Path, command: str) -> str:
+    """Upgrade saved or manually selected known launch commands to consume $PORT."""
+    command = command.strip()
+    if "$PORT" in command or "${PORT}" in command:
+        return command
+    http_server = re.search(r"\bpython(?:3(?:\.\d+)?)?\s+-m\s+http\.server\b(?:\s+\d{2,5})?", command)
+    if http_server:
+        replacement = re.sub(r"\s+\d{2,5}$", "", http_server.group(0))
+        return command[:http_server.start()] + replacement + ' "$PORT" --bind 127.0.0.1' + command[http_server.end():]
+    npm_match = re.fullmatch(r"npm\s+run\s+([A-Za-z0-9:._-]+)", command)
+    if npm_match:
+        package = root / "package.json"
+        try:
+            scripts = json.loads(package.read_text()).get("scripts") or {}
+            body = scripts.get(npm_match.group(1))
+            if isinstance(body, str):
+                return package_preview_command(npm_match.group(1), body)
+        except (OSError, json.JSONDecodeError):
+            pass
+    lower = command.lower()
+    if re.search(r"(?:^|\s)next(?:\s+(?:dev|start))?(?:\s|$)", lower):
+        return f'{command} --hostname 127.0.0.1 --port "$PORT"'
+    if any(marker in lower for marker in (
+        "vite", "astro", "nuxt", "ng serve", "webpack serve", "webpack-dev-server",
+        "gatsby develop", "parcel", "uvicorn", "flask run",
+    )):
+        return f'{command} --host 127.0.0.1 --port "$PORT"'
+    if re.search(r"(?:^|\s)http-server(?:\s|$)", lower):
+        return f'{command} --port "$PORT"'
+    if re.search(r"(?:^|\s)serve(?:\s|$)", lower):
+        return f'{command} --listen "$PORT"'
+    if "manage.py runserver" in lower:
+        return f'{command} 127.0.0.1:"$PORT"'
+    return command
+
+
+def preview_settings(floor_id: str) -> dict:
+    if not floor_id:
+        return {}
+    with database_lock:
+        row = require_database().execute(
+            "SELECT command, app_path FROM preview_settings WHERE floor_id=?", (floor_id,)
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def save_preview_settings(floor_id: str, command: str | None = None, app_path: str | None = None) -> None:
+    current = preview_settings(floor_id)
+    command = str(command if command is not None else current.get("command") or "").strip() or None
+    selected_app = str(app_path if app_path is not None else current.get("app_path") or "").strip() or None
+    with database_lock:
+        connection = require_database()
+        connection.execute(
+            """INSERT INTO preview_settings(floor_id, command, app_path, updated_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT(floor_id) DO UPDATE SET command=excluded.command,
+               app_path=excluded.app_path, updated_at=excluded.updated_at""",
+            (floor_id, command, selected_app, now_ms()),
+        )
+        connection.commit()
+
+
+def detect_preview_commands(root: Path) -> list[dict]:
+    """Detect launch commands, ordered from conventional to increasingly broad."""
+    candidates: list[dict] = []
+    package = root / "package.json"
+    if package.is_file():
+        try:
+            scripts = json.loads(package.read_text()).get("scripts") or {}
+            for name in ("dev", "start", "serve"):
+                if isinstance(scripts.get(name), str):
+                    candidates.append({"name": f"npm {name}", "command": package_preview_command(name, scripts[name]), "source": "package.json"})
+        except (OSError, json.JSONDecodeError):
+            pass
+    procfile = root / "Procfile"
+    if procfile.is_file():
+        for line in procfile.read_text(errors="replace").splitlines():
+            match = re.match(r"\s*([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$", line)
+            if match and match.group(1).lower() in ("web", "app", "server"):
+                candidates.append({"name": f"Procfile {match.group(1)}", "command": match.group(2), "source": "Procfile"})
+    for filename in ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"):
+        if (root / filename).is_file():
+            candidates.append({"name": "docker compose up", "command": f"docker compose -f {shlex.quote(filename)} up", "source": filename})
+            break
+    makefile = next((path for path in (root / "Makefile", root / "makefile") if path.is_file()), None)
+    if makefile:
+        targets = set(re.findall(r"^([A-Za-z0-9_.-]+):(?!=)", makefile.read_text(errors="replace"), re.MULTILINE))
+        for name in ("dev", "start", "serve", "run"):
+            if name in targets:
+                candidates.append({"name": f"make {name}", "command": f"make {name}", "source": makefile.name})
+    if not candidates and (root / "index.html").is_file():
+        candidates.append({
+            "name": "static website", "command": 'python3 -m http.server "$PORT" --bind 127.0.0.1',
+            "source": "index.html",
+        })
+    seen: set[str] = set()
+    return [item for item in candidates if not (item["command"] in seen or seen.add(item["command"]))]
+
+
+def discover_preview_apps(root: Path) -> list[dict]:
+    """Find runnable apps without treating several scripts in one app as ambiguity."""
+    repositories = [root] if (root / ".git").exists() else discover_git_repositories(root)
+    candidate_roots: list[Path] = [root]
+    candidate_roots.extend(repository for repository in repositories if repository != root)
+    manifests = {"package.json", "Procfile", "Makefile", "makefile", "compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}
+    for repository in repositories:
+        static_roots: list[Path] = [repository] if (repository / "index.html").is_file() else []
+        for current, directory_names, file_names in os.walk(repository, followlinks=False):
+            current_path = Path(current)
+            try:
+                depth = len(current_path.relative_to(repository).parts)
+            except ValueError:
+                continue
+            directory_names[:] = [
+                name for name in directory_names
+                if name not in {".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "target"}
+                and depth < 4
+            ]
+            has_manifest = bool(manifests.intersection(file_names))
+            is_static_root = "index.html" in file_names and not any(parent == current_path or parent in current_path.parents for parent in static_roots)
+            if current_path != repository and (has_manifest or is_static_root):
+                candidate_roots.append(current_path)
+                if is_static_root:
+                    static_roots.append(current_path)
+    apps, seen = [], set()
+    for app_root in candidate_roots:
+        resolved = app_root.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        commands = detect_preview_commands(resolved)
+        if not commands:
+            continue
+        relative = "." if resolved == root else str(resolved.relative_to(root))
+        repository_root = next((repository for repository in repositories if resolved == repository or repository in resolved.parents), resolved)
+        apps.append({
+            "id": hashlib.sha256(str(resolved).encode()).hexdigest()[:12],
+            "name": root.name if relative == "." else relative,
+            "path": str(resolved), "relativePath": relative,
+            "repositoryPath": str(repository_root),
+            "command": commands[0]["command"], "commands": commands,
+            "openapi": discover_openapi(resolved),
+        })
+    return apps
+
+
+def preview_detection(root: Path, floor_id: str) -> dict:
+    apps = discover_preview_apps(root)
+    saved = preview_settings(floor_id)
+    selected_app = next((item for item in apps if item["path"] == saved.get("app_path")), None)
+    if not selected_app and len(apps) == 1:
+        selected_app = apps[0]
+    candidates = selected_app["commands"] if selected_app else []
+    selected = (saved.get("command") if selected_app and saved.get("app_path") == selected_app["path"] else None)
+    selected = selected or (selected_app and selected_app["command"])
+    return {
+        "floorId": floor_id, "path": str(root), "apps": apps, "app": selected_app,
+        "appPath": selected_app and selected_app["path"], "candidates": candidates,
+        "command": selected, "ambiguous": False, "needsApp": len(apps) > 1 and not selected_app,
+        "needsCommand": not apps,
+        "openapi": selected_app["openapi"] if selected_app else {"path": None, "endpoints": []},
+    }
+
+
+def port_available(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def preview_port_ready(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def allocate_preview_port(preferred: int | None = None) -> int:
+    if preferred is not None:
+        if not 1 <= int(preferred) <= 65535 or not port_available(int(preferred)):
+            raise ValueError(f"Preview port {preferred} is not available.")
+        return int(preferred)
+    with lock:
+        active_ports = {int(item["port"]) for item in preview_processes.values() if item.get("status") == "running"}
+    for port in range(PREVIEW_PORT_MIN, PREVIEW_PORT_MAX + 1):
+        if port not in active_ports and port_available(port):
+            return port
+    raise RuntimeError("No managed preview ports are available.")
+
+
+def parsed_preview_port(line: str) -> int | None:
+    for pattern in PORT_PATTERNS:
+        match = pattern.search(line)
+        if match and 1 <= int(match.group("port")) <= 65535:
+            return int(match.group("port"))
+    return None
+
+
+def public_preview(item: dict, since: int = 0) -> dict:
+    process = item.get("process")
+    if process is not None and process.poll() is not None and item.get("status") == "running":
+        item["status"] = "completed" if process.returncode == 0 else "failed"
+        item["returncode"] = process.returncode
+    lines = list(item.get("lines") or [])
+    public = {
+        key: value for key, value in item.items()
+        if key not in {"process", "lines", "processToken"}
+    } | {"lines": lines[since:], "sequence": len(lines), "url": f"http://127.0.0.1:{item['port']}"}
+    if "http.server" in str(item.get("command") or ""):
+        public["previewUrl"] = f"/api/previews/{item['floorId']}/view/"
+    return public
+
+
+def terminate_process_group(process: subprocess.Popen | None, pid: int | None = None) -> None:
+    target = process.pid if process is not None else pid
+    if not target:
+        return
+    try:
+        os.killpg(int(target), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            if process is not None:
+                process.terminate()
+            else:
+                os.kill(int(target), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def terminate_preview_process(item: dict, timeout: float = 3) -> None:
+    process = item.get("process")
+    terminate_process_group(process, item.get("pid"))
+    if process is None:
+        return
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=1)
+        except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired):
+            pass
+
+
+def process_identity_token(pid: int) -> str | None:
+    """Return the OS process start tick so a recycled PID is never terminated."""
+    try:
+        # The command name can contain spaces and parentheses, so split after
+        # the final ')' before indexing field 22 from proc(5).
+        tail = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return tail[19]
+    except (OSError, IndexError):
+        return None
+
+
+def cleanup_orphaned_previews() -> None:
+    if database is None:
+        return
+    with database_lock:
+        connection = require_database()
+        rows = connection.execute("SELECT pid, process_token FROM preview_processes WHERE status IN ('starting','running')").fetchall()
+    for row in rows:
+        pid = int(row["pid"])
+        if row["process_token"] and process_identity_token(pid) == row["process_token"]:
+            terminate_process_group(None, pid)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and process_identity_token(pid) == row["process_token"]:
+                time.sleep(0.05)
+            if process_identity_token(pid) == row["process_token"]:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+    with database_lock:
+        connection.execute("UPDATE preview_processes SET status='interrupted' WHERE status IN ('starting','running')")
+        connection.commit()
+
+
+def stop_all_previews() -> None:
+    with lock:
+        active = list(preview_processes.values())
+    for item in active:
+        terminate_preview_process(item)
+
+
+def start_preview(data: dict) -> tuple[dict, HTTPStatus]:
+    floor_id = str(data.get("floorId", "")).strip()
+    root = workspace_root(data.get("path"))
+    if not floor_id or len(floor_id) > 160:
+        raise ValueError("A valid floorId is required.")
+    with lock:
+        existing = preview_processes.get(floor_id)
+    if existing and existing.get("status") in {"starting", "running"}:
+        return public_preview(existing), HTTPStatus.OK
+    detection = preview_detection(root, floor_id)
+    command = str(data.get("command") or detection.get("command") or "").strip()
+    if not command or len(command) > 4000:
+        raise ValueError("Choose or enter a preview launch command.")
+    command = managed_preview_command(root, command)
+    repository_spec = data.get("repository") if isinstance(data.get("repository"), dict) else {"mode": "local", "path": str(root)}
+    gated = "shell_commands" in permission_categories(repository_spec, "work")
+    if gated and data.get("approved") is not True:
+        return {"floorId": floor_id, "status": "awaiting_approval", "requiresConfirmation": True, "approvalCategories": ["shell_commands"], "command": command}, HTTPStatus.ACCEPTED
+    # Preview ports are always managed. Apps may announce a different bound
+    # port in their startup output, which the collector detects automatically.
+    save_preview_settings(floor_id, command, str(root))
+    # Keep allocation and registration atomic across concurrent floor starts.
+    with preview_launch_lock:
+        port = allocate_preview_port()
+        environment = {**agent_environment(), "PORT": str(port), "HOST": "127.0.0.1", "HOSTNAME": "127.0.0.1"}
+        shell = os.environ.get("SHELL") or "/bin/sh"
+        process = subprocess.Popen(
+            [shell, "-lc", command], cwd=root, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, env=environment, start_new_session=True, bufsize=1,
+        )
+        item = {"floorId": floor_id, "path": str(root), "command": command, "pid": process.pid,
+                "port": port, "allocatedPort": port, "startedAt": now_ms(), "status": "starting",
+                "lines": [], "process": process, "detectedPort": False, "processToken": process_identity_token(process.pid)}
+        with lock:
+            preview_processes[floor_id] = item
+    with database_lock:
+        connection = require_database()
+        connection.execute(
+            "INSERT OR REPLACE INTO preview_processes(floor_id,pid,port,command,repository,started_at,status,process_token) VALUES (?,?,?,?,?,?,?,?)",
+            (floor_id, process.pid, port, command, str(root), item["startedAt"], "starting", item["processToken"]),
+        )
+        connection.commit()
+    def collect() -> None:
+        assert process.stdout is not None
+        for raw in process.stdout:
+            line = raw.rstrip("\n")
+            with lock:
+                item["lines"] = (item["lines"] + [line])[-PREVIEW_LOG_LIMIT:]
+                detected = parsed_preview_port(line)
+                if detected:
+                    item["port"] = detected
+                    item["detectedPort"] = True
+        process.stdout.close()
+        returncode = process.wait()
+        with lock:
+            item["returncode"] = returncode
+            item["endedAt"] = now_ms()
+            item["status"] = "stopped" if item.get("status") == "stopping" else "completed" if returncode == 0 else "failed"
+            item.pop("process", None)
+        with database_lock:
+            connection.execute(
+                "UPDATE preview_processes SET port=?, status=? WHERE floor_id=? AND pid=?",
+                (item["port"], item["status"], floor_id, process.pid),
+            )
+            connection.commit()
+    threading.Thread(target=collect, name=f"office-preview-{floor_id[:30]}", daemon=True).start()
+    deadline = time.monotonic() + PREVIEW_START_TIMEOUT
+    while time.monotonic() < deadline:
+        with lock:
+            status = item.get("status")
+            active_port = int(item["port"])
+        if status in {"completed", "failed", "stopped", "stopping"}:
+            break
+        if preview_port_ready(active_port):
+            with lock:
+                if item.get("status") == "starting":
+                    item["status"] = "running"
+            with database_lock:
+                connection.execute(
+                    "UPDATE preview_processes SET port=?, status='running' WHERE floor_id=? AND pid=?",
+                    (active_port, floor_id, process.pid),
+                )
+                connection.commit()
+            return public_preview(item), HTTPStatus.ACCEPTED
+        time.sleep(0.1)
+    with lock:
+        stopped_early = item.get("status") in {"completed", "failed", "stopped", "stopping"}
+        recent_output = "\n".join(item.get("lines", [])[-8:]).strip()
+    if process.poll() is None:
+        terminate_preview_process(item)
+    message = (
+        "Preview process exited before opening its port."
+        if stopped_early else f"Preview did not open a listening port within {PREVIEW_START_TIMEOUT:g} seconds."
+    )
+    if recent_output:
+        message += "\n" + recent_output
+    with lock:
+        item["status"] = "failed"
+        item["errorMessage"] = message
+        item["endedAt"] = now_ms()
+    with database_lock:
+        connection.execute(
+            "UPDATE preview_processes SET port=?, status='failed' WHERE floor_id=? AND pid=?",
+            (item["port"], floor_id, process.pid),
+        )
+        connection.commit()
+    return {**public_preview(item), "error": message}, HTTPStatus.BAD_GATEWAY
+
+
+def stop_preview(floor_id: str) -> dict:
+    with lock:
+        item = preview_processes.get(floor_id)
+    if not item:
+        raise ValueError("This floor has no preview session.")
+    with lock:
+        item["status"] = "stopping"
+    with database_lock:
+        connection = require_database()
+        connection.execute("UPDATE preview_processes SET status='stopping' WHERE floor_id=?", (floor_id,))
+        connection.commit()
+    terminate_preview_process(item)
+    return public_preview(item)
+
+
+def restart_preview(floor_id: str) -> tuple[dict, HTTPStatus]:
+    with lock:
+        item = preview_processes.get(floor_id)
+    if not item or item.get("status") not in {"starting", "running", "stopping"}:
+        raise ValueError("This floor has no running preview to restart.")
+    command, path = item["command"], item["path"]
+    terminate_preview_process(item)
+    with lock:
+        item["status"] = "restarting"
+    return start_preview({"floorId": floor_id, "path": path, "command": command, "approved": True})
+
+
+def discover_openapi(root: Path) -> dict:
+    names = ("openapi.json", "swagger.json", "openapi.yaml", "openapi.yml", "swagger.yaml", "swagger.yml")
+    path = next((root / name for name in names if (root / name).is_file()), None)
+    if path is None:
+        matches = [item for item in root.glob("**/*") if item.is_file() and item.name.lower() in names and ".git" not in item.parts]
+        path = matches[0] if matches else None
+    if path is None:
+        return {"path": None, "endpoints": []}
+    endpoints: list[dict] = []
+    try:
+        text = path.read_text(errors="replace")
+        if path.suffix == ".json":
+            document = json.loads(text)
+            for route, operations in (document.get("paths") or {}).items():
+                if isinstance(operations, dict):
+                    for method, operation in operations.items():
+                        if method.upper() in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+                            endpoints.append({"method": method.upper(), "path": route, "summary": (operation or {}).get("summary", "") if isinstance(operation, dict) else ""})
+        else:
+            active_path = None
+            for line in text.splitlines():
+                route = re.match(r"^\s{0,4}(/[^:]*):\s*$", line)
+                if route:
+                    active_path = route.group(1)
+                    continue
+                method = re.match(r"^\s+(get|post|put|patch|delete|head|options):\s*$", line, re.I)
+                if active_path and method:
+                    endpoints.append({"method": method.group(1).upper(), "path": active_path, "summary": ""})
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"path": str(path.relative_to(root)), "endpoints": endpoints[:500]}
+
+
+def preview_request(data: dict) -> dict:
+    floor_id = str(data.get("floorId", "")).strip()
+    with lock:
+        item = preview_processes.get(floor_id)
+    if not item or item.get("status") != "running":
+        raise ValueError("Start this floor's preview before sending a request.")
+    method = str(data.get("method", "GET")).upper()
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+        raise ValueError("Unsupported HTTP method.")
+    path = str(data.get("url") or "/").strip()
+    parsed = urlparse(path)
+    if parsed.scheme or parsed.netloc:
+        if parsed.hostname not in {"localhost", "127.0.0.1", "::1"} or parsed.port != int(item["port"]):
+            raise ValueError("Requests are limited to this floor's running backend.")
+        url = path
+    else:
+        url = f"http://127.0.0.1:{item['port']}/{path.lstrip('/')}"
+    headers = data.get("headers") or {}
+    if isinstance(headers, str):
+        headers = json.loads(headers or "{}")
+    if not isinstance(headers, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in headers.items()):
+        raise ValueError("Headers must be a JSON object of string values.")
+    body = str(data.get("body") or "").encode() if method not in {"GET", "HEAD"} else None
+    request = Request(url, data=body, headers=headers, method=method)
+    started = time.monotonic()
+    try:
+        response = urlopen(request, timeout=15)
+    except HTTPError as exc:
+        response = exc
+    except URLError as exc:
+        raise ValueError(f"Backend request failed: {exc.reason}") from exc
+    content = response.read(2_000_001)
+    truncated = len(content) > 2_000_000
+    content = content[:2_000_000]
+    return {"status": response.status, "reason": response.reason, "headers": dict(response.headers.items()),
+            "body": content.decode("utf-8", errors="replace"), "truncated": truncated,
+            "durationMs": round((time.monotonic() - started) * 1000), "url": url}
+
+
+def live_edit_session_from_database(session_id: str) -> dict | None:
+    with database_lock:
+        row = require_database().execute("SELECT * FROM live_edit_sessions WHERE id=?", (session_id,)).fetchone()
+    if not row:
+        return None
+    return {"id": row["id"], "floorId": row["floor_id"], "repository": json.loads(row["repository_json"]),
+            "checkpointRef": row["checkpoint_ref"], "editLog": json.loads(row["edit_log_json"] or "[]"),
+            "steps": json.loads(row["steps_json"] or "[]"), "status": row["status"], "startedAt": row["started_at"], "endedAt": row["ended_at"]}
+
+
+def public_live_edit_session(session: dict) -> dict:
+    return {"id": session["id"], "floorId": session["floorId"], "status": session["status"],
+            "startedAt": session["startedAt"], "endedAt": session.get("endedAt"),
+            "editLog": list(session.get("editLog") or []), "undoCount": len(session.get("steps") or [])}
+
+
+def persist_live_edit_session(session: dict) -> None:
+    with database_lock:
+        connection = require_database()
+        connection.execute(
+            """INSERT OR REPLACE INTO live_edit_sessions
+               (id,floor_id,repository_json,checkpoint_ref,edit_log_json,steps_json,status,started_at,ended_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (session["id"], session["floorId"], json.dumps(session["repository"]), session["checkpointRef"],
+             json.dumps(session.get("editLog") or [], ensure_ascii=False), json.dumps(session.get("steps") or []),
+             session["status"], session["startedAt"], session.get("endedAt")),
+        )
+        connection.commit()
+
+
+def ensure_live_edit_idle(session: dict) -> None:
+    with lock:
+        run = runs.get(f"live-edit:{session['floorId']}")
+    if run and run.get("status") in ACTIVE_RUN_STATUSES:
+        raise ValueError("Wait for the current live edit to finish before changing session history.")
+
+
+def start_live_edit_session(data: dict) -> dict:
+    floor_id = str(data.get("floorId", "")).strip()
+    repository = data.get("repository") or {"mode": "local", "path": data.get("path")}
+    if not floor_id:
+        raise ValueError("A floorId is required.")
+    with lock:
+        active = next((item for item in live_edit_sessions.values() if item["floorId"] == floor_id and item["status"] == "active"), None)
+    if not active:
+        with database_lock:
+            row = require_database().execute(
+                "SELECT id FROM live_edit_sessions WHERE floor_id=? AND status='active' ORDER BY started_at DESC LIMIT 1", (floor_id,)
+            ).fetchone()
+        active = live_edit_session_from_database(row["id"]) if row else None
+        if active:
+            with lock:
+                live_edit_sessions[active["id"]] = active
+    if active:
+        return public_live_edit_session(active)
+    session_id = hashlib.sha256(f"live-edit:{floor_id}:{time.time_ns()}".encode()).hexdigest()[:20]
+    checkpoint = create_run_checkpoint(repository, int(time.time_ns() % 2_000_000_000))
+    session = {"id": session_id, "floorId": floor_id, "repository": repository, "checkpointRef": checkpoint,
+               "editLog": [], "steps": [], "status": "active", "startedAt": now_ms(), "endedAt": None}
+    with lock:
+        live_edit_sessions[session_id] = session
+    persist_live_edit_session(session)
+    return public_live_edit_session(session)
+
+
+def prepare_live_edit(data: dict) -> tuple[dict, dict]:
+    session_id = str(data.get("sessionId", "")).strip()
+    instruction = str(data.get("instruction", "")).strip()
+    with lock:
+        session = live_edit_sessions.get(session_id)
+    if not session or session.get("status") != "active":
+        raise ValueError("This live-edit session is not active.")
+    ensure_live_edit_idle(session)
+    if not instruction or len(instruction) > 10_000:
+        raise ValueError("Enter a live-edit instruction of at most 10,000 characters.")
+    step_ref = create_run_checkpoint(session["repository"], int(time.time_ns() % 2_000_000_000))
+    with lock:
+        session["steps"].append({"instruction": instruction, "checkpointRef": step_ref, "createdAt": now_ms()})
+        session["editLog"].append(instruction)
+    persist_live_edit_session(session)
+    return session, {
+        "profileId": f"live-edit:{session['floorId']}", "agent": str(data.get("agent") or "codex"),
+        "task": instruction[:500], "runType": "work", "freshSession": False,
+        "repository": session["repository"], "pathClaims": data.get("pathClaims") or [],
+        "prompt": "Apply this one narrow live-preview edit directly, then verify it. Do not ask for confirmation.\n\n" + instruction,
+    }
+
+
+def undo_live_edit(session_id: str) -> dict:
+    with lock:
+        session = live_edit_sessions.get(session_id)
+    if not session or session.get("status") != "active":
+        raise ValueError("This live-edit session is not active.")
+    ensure_live_edit_idle(session)
+    with lock:
+        step = session["steps"].pop() if session["steps"] else None
+    if not step:
+        raise ValueError("There are no live edits to undo.")
+    restored = restore_run_checkpoint(step["checkpointRef"])
+    with lock:
+        if session["editLog"]:
+            session["editLog"].pop()
+    persist_live_edit_session(session)
+    return {**public_live_edit_session(session), "repositories": restored}
+
+
+def discard_live_edit(session_id: str) -> dict:
+    with lock:
+        session = live_edit_sessions.get(session_id) or live_edit_session_from_database(session_id)
+    if not session or session.get("status") != "active":
+        raise ValueError("This live-edit session is not active.")
+    ensure_live_edit_idle(session)
+    restored = restore_run_checkpoint(session["checkpointRef"])
+    session["status"] = "discarded"; session["endedAt"] = now_ms()
+    with lock:
+        live_edit_sessions[session_id] = session
+    persist_live_edit_session(session)
+    return {**public_live_edit_session(session), "repositories": restored}
+
+
+def promote_live_edit(session_id: str) -> dict:
+    with lock:
+        session = live_edit_sessions.get(session_id) or live_edit_session_from_database(session_id)
+    if not session or session.get("status") != "active":
+        raise ValueError("This live-edit session is not active.")
+    ensure_live_edit_idle(session)
+    completion = create_run_completion(session["repository"], int(time.time_ns() % 2_000_000_000))
+    timeline = checkpoint_diff(session["checkpointRef"], completion)
+    if not any(item.get("patch") for item in timeline.get("repositories", [])):
+        raise ValueError("The live-edit session has no changes to promote.")
+    session["status"] = "promoted"; session["endedAt"] = now_ms()
+    persist_live_edit_session(session)
+    body = "## Live-edit session\n\n" + "\n".join(f"- {entry}" for entry in session.get("editLog") or [])
+    root_value = session["repository"].get("path") if isinstance(session["repository"], dict) else None
+    root = Path(str(root_value)).expanduser().resolve() if root_value else None
+    repositories = []
+    for item in timeline["repositories"]:
+        path = Path(item["path"])
+        repositories.append("." if root and path == root else str(path.relative_to(root)) if root and root in path.parents else str(path))
+    return {**public_live_edit_session(session), "checkpointRef": session["checkpointRef"], "completionRef": completion,
+            "diff": timeline, "review": {"ready": True, "summary": f"{len(session.get('editLog') or [])} live edits ready for review.",
+            "issues": [], "repositories": repositories, "pr_title": (session.get("editLog") or ["Promote live preview edits"])[0][:120],
+            "pr_body": body, "suggested_branch": f"live-preview/{session['floorId'][:40]}", "destination_branch": "main"}}
+
+
 def git_panel_state(repository: Path) -> dict:
     git = git_executable()
     porcelain = checked_command([git, "status", "--porcelain=v1"], repository)
@@ -2254,6 +3103,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             else RECEPTION_SCHEMA if run["runType"] == "reception"
             else FLOOR_CALL_SCHEMA if run["runType"] == "floor_call"
             else FLOOR_INTENT_SCHEMA if run["runType"] == "floor_intent"
+            else APP_BRIEF_SCHEMA if run["runType"] == "app_brief"
             else None
         )
         if output_schema and agent_adapter.uses_structured_output_files():
@@ -2279,6 +3129,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             "reception": ("thinking", "Routing work across floors"),
             "floor_call": ("coordinating", "Consulting another floor"),
             "floor_intent": ("thinking", "Reading the floor request"),
+            "app_brief": ("thinking", "Reviewing the app brief"),
             "chat": ("thinking", "Writing a response"),
         }.get(run["runType"], ("thinking", "Starting the task"))
         set_activity(run, *initial_activity)
@@ -2372,6 +3223,19 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
                 raise RuntimeError("The consulted floor returned an invalid answer.")
             if run["runType"] == "floor_intent" and not isinstance(candidate.get("floors"), list):
                 raise RuntimeError("Floor intent parsing returned an invalid floor list.")
+            if run["runType"] == "app_brief" and (
+                not isinstance(candidate.get("ready"), bool)
+                or not isinstance(candidate.get("summary"), str)
+                or not isinstance(candidate.get("questions"), list)
+                or not isinstance(candidate.get("refined_brief"), str)
+            ):
+                raise RuntimeError("App brief review returned an invalid result.")
+            if run["runType"] == "app_brief" and not candidate.get("ready") and not candidate.get("questions"):
+                raise RuntimeError("App brief review must ask a question when more detail is required.")
+            if run["runType"] == "app_brief" and candidate.get("ready") and candidate.get("questions"):
+                raise RuntimeError("A ready app brief cannot include unresolved questions.")
+            if run["runType"] == "app_brief" and not candidate.get("refined_brief", "").strip():
+                raise RuntimeError("App brief review returned an empty refined brief.")
             plan_result = candidate
         with lock:
             run["returncode"] = returncode
@@ -2496,7 +3360,7 @@ class OfficeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             self.json_response({
                 "ok": True,
-                "version": 7,
+                "version": 8,
                 "runTypes": list(SUPPORTED_RUN_TYPES),
                 "agents": {"codex": bool(find_cli("codex")), "claude": bool(find_cli("claude"))},
                 "plugins": bundled_plugins(),
@@ -2598,6 +3462,69 @@ class OfficeHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.json_response({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
+        if parsed.path == "/api/preview/detect":
+            try:
+                query = parse_qs(parsed.query)
+                root = workspace_root(query.get("path", [""])[0])
+                self.json_response(preview_detection(root, query.get("floorId", [""])[0]))
+            except ValueError as exc:
+                self.json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.json_response({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        preview_view_match = re.fullmatch(r"/api/previews/([^/]+)/view(?:/(.*))?", parsed.path)
+        if preview_view_match:
+            floor_id, relative = preview_view_match.groups()
+            with lock:
+                item = preview_processes.get(floor_id)
+            if not item or item.get("status") != "running":
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Preview is not running")
+                return
+            if "http.server" not in str(item.get("command") or ""):
+                self.send_error(HTTPStatus.BAD_REQUEST, "This preview does not use the static-site proxy")
+                return
+            target = f"http://127.0.0.1:{int(item['port'])}/{relative or ''}"
+            if parsed.query:
+                target += "?" + parsed.query
+            try:
+                request = Request(target, headers={"User-Agent": "TheOfficePreview/1.0"})
+                with urlopen(request, timeout=10) as response:
+                    body = response.read(MAX_STATE_BODY + 1)
+                    if len(body) > MAX_STATE_BODY:
+                        raise ValueError("Preview response is too large.")
+                    self.send_response(response.status)
+                    for header in ("Content-Type", "Content-Encoding", "Last-Modified"):
+                        value = response.headers.get(header)
+                        if value:
+                            self.send_header(header, value)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+            except HTTPError as exc:
+                body = exc.read(MAX_STATE_BODY)
+                self.send_response(exc.code)
+                self.send_header("Content-Type", exc.headers.get("Content-Type", "text/plain"))
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (URLError, OSError, ValueError) as exc:
+                self.send_error(HTTPStatus.BAD_GATEWAY, str(exc))
+            return
+        preview_match = re.fullmatch(r"/api/previews/([^/]+)", parsed.path)
+        if preview_match:
+            floor_id = preview_match.group(1)
+            try:
+                since = max(0, int(parse_qs(parsed.query).get("since", ["0"])[0]))
+                with lock:
+                    item = preview_processes.get(floor_id)
+                if not item:
+                    self.json_response({"floorId": floor_id, "status": "stopped", "lines": [], "sequence": 0})
+                else:
+                    self.json_response(public_preview(item, since))
+            except ValueError as exc:
+                self.json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/api/git-panel":
             try:
                 query = parse_qs(parsed.query)
@@ -2693,6 +3620,13 @@ class OfficeHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/floor-intent-resolve":
                 self.json_response(floor_intent_resolution(data))
                 return
+            if parsed.path == "/api/floor-intent-parse":
+                parsed_intent = parse_floor_intent_locally(data.get("messages", data.get("text")))
+                self.json_response({"parsed": parsed_intent is not None, "result": parsed_intent})
+                return
+            if parsed.path == "/api/new-app":
+                self.json_response(create_new_app_workspace(data), HTTPStatus.CREATED)
+                return
             if parsed.path == "/api/local-history":
                 self.json_response(local_history_manifest(data))
                 return
@@ -2724,6 +3658,36 @@ class OfficeHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/shell-jobs":
                 self.json_response(start_shell_job(data), HTTPStatus.ACCEPTED)
+                return
+            if parsed.path == "/api/previews/start":
+                payload, status = start_preview(data)
+                self.json_response(payload, status)
+                return
+            preview_stop_match = re.fullmatch(r"/api/previews/([^/]+)/stop", parsed.path)
+            if preview_stop_match:
+                self.json_response(stop_preview(preview_stop_match.group(1)))
+                return
+            preview_restart_match = re.fullmatch(r"/api/previews/([^/]+)/restart", parsed.path)
+            if preview_restart_match:
+                payload, status = restart_preview(preview_restart_match.group(1))
+                self.json_response(payload, status)
+                return
+            if parsed.path == "/api/preview/request":
+                self.json_response(preview_request(data))
+                return
+            if parsed.path == "/api/live-edit/sessions":
+                self.json_response(start_live_edit_session(data), HTTPStatus.CREATED)
+                return
+            if parsed.path == "/api/live-edit/edit":
+                self.json_response({
+                    "error": "Direct preview edits are disabled. Queue this change as a floor employee task."
+                }, HTTPStatus.GONE)
+                return
+            live_action_match = re.fullmatch(r"/api/live-edit/sessions/([a-f0-9]+)/(undo|discard|promote)", parsed.path)
+            if live_action_match:
+                session_id, action = live_action_match.groups()
+                result = undo_live_edit(session_id) if action == "undo" else discard_live_edit(session_id) if action == "discard" else promote_live_edit(session_id)
+                self.json_response(result)
                 return
             shell_stop_match = re.fullmatch(r"/api/shell-jobs/([a-f0-9]+)/stop", parsed.path)
             if shell_stop_match:
@@ -2986,6 +3950,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        stop_all_previews()
         server.server_close()
 
 

@@ -22,10 +22,10 @@ Reception, planning, and review use lightweight classifier calls without changin
 
 ```sh
 export TASK_OFFICE_CLAUDE_CLASSIFIER_MODEL=haiku
-export TASK_OFFICE_CODEX_CLASSIFIER_MODEL=gpt-5.1-codex-mini
+export TASK_OFFICE_CODEX_CLASSIFIER_MODEL=gpt-5.6-luna
 ```
 
-Set a variable to an empty string to let that CLI select its configured model.
+Codex uses the account-compatible recommended model by default; pinning a classifier model is optional. Set either variable to an empty string to let that CLI select its configured model.
 
 Each floor can configure:
 
@@ -39,6 +39,12 @@ Each floor can configure:
 MCP definitions are passed only to fresh sessions and remain floor-scoped because credentials and external-access policies may differ by project.
 
 Every valid plugin in `the-office-plugins/plugins/` is enabled for full Claude floor runs. Valid custom Claude plugin directories saved on any floor are shared office-wide. Lightweight classification calls remain plugin-free, and Claude plugins are not passed to Codex.
+
+## New apps from scratch
+
+**Add a floor → Create app from scratch** accepts pasted requirements or a text-based document (`.md`, `.txt`, `.json`, `.yaml`, or `.html`). The selected agent asks materially blocking questions before creation. Once the brief is ready, The Office creates a Git repository on `main`, commits the refined requirements as `APP_BRIEF.md`, creates the floor, and queues the initial build through the normal review workflow.
+
+The target must be an absolute path whose parent already exists. If the target already exists, it must be empty.
 
 ## Data and retention
 
@@ -96,6 +102,24 @@ Run on another loopback port:
 ```sh
 python3 office_server.py --port 9000
 ```
+
+Live previews allocate a free loopback port from `43100` through `43199`. To use a different managed range:
+
+```sh
+export TASK_OFFICE_PREVIEW_PORT_MIN=44000
+export TASK_OFFICE_PREVIEW_PORT_MAX=44099
+python3 office_server.py
+```
+
+The Office always chooses a free port from this range. Recognized development servers—including Vite, Next.js, Angular, Astro, Nuxt, Webpack, Gatsby, Parcel, Uvicorn, Flask, Django, and static Python servers—receive that loopback host and port as explicit command-line arguments, overriding framework defaults or hardcoded ports. Other commands receive `PORT`, `HOST`, and `HOSTNAME` environment variables; if an unknown app still announces another port, the preview follows it. Detected app and command choices are remembered in SQLite. Starting a preview follows the floor's shell-command confirmation policy, and tracked preview processes are terminated on shutdown or cleaned up after a restart.
+
+A preview is reported as running only after its port accepts a connection. Startup waits for up to 45 seconds by default. For consistently slower projects, set a longer bounded timeout:
+
+```sh
+export TASK_OFFICE_PREVIEW_START_TIMEOUT=90
+```
+
+Static websites are rendered through a same-origin Office proxy. This keeps their iframe working when the Office is opened through a forwarded port, container, or remote workspace where the browser's `127.0.0.1` is not the server's loopback interface.
 
 Print the managed-settings fragment used for native Claude plugin relevance suggestions:
 

@@ -4,12 +4,13 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
-from http.server import ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -47,6 +48,29 @@ class PersistenceTests(unittest.TestCase):
         with app.database_lock:
             snapshots = app.database.execute("SELECT revision FROM state_snapshots").fetchall()
         self.assertEqual([row["revision"] for row in snapshots], [1])
+
+    def test_preview_start_waits_until_the_server_port_is_listening(self):
+        repository = Path(self.temporary_directory.name) / "slow-preview"
+        repository.mkdir()
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        command = (
+            "python3 -c 'import http.server,os,socketserver,time;time.sleep(0.25);"
+            "socketserver.TCPServer((\"127.0.0.1\",int(os.environ[\"PORT\"])),"
+            "http.server.SimpleHTTPRequestHandler).serve_forever()'"
+        )
+        started = time.monotonic()
+        preview, status = app.start_preview({
+            "floorId": "slow-preview", "path": str(repository), "command": command,
+            "repository": {"mode": "local", "path": str(repository), "permissions": {"requireConfirmationFor": []}},
+        })
+        try:
+            self.assertEqual(status, 202)
+            self.assertEqual(preview["status"], "running")
+            self.assertTrue(app.preview_port_ready(preview["port"]))
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+        finally:
+            app.stop_preview("slow-preview")
+            app.preview_processes.pop("slow-preview", None)
 
     def test_custom_plugin_directories_are_shared_across_floors(self):
         plugin = Path(self.temporary_directory.name) / "custom-plugin"
@@ -286,6 +310,79 @@ class GitSafetyTests(unittest.TestCase):
         app.git_panel_action({"path": str(self.repository), "action": "discard", "file": "scratch.txt", "confirmed": True})
         self.assertFalse((self.repository / "scratch.txt").exists())
 
+    def test_static_site_is_detected_as_one_runnable_app_without_a_manual_command(self):
+        (self.repository / "index.html").write_text("<h1>Website</h1>\n")
+        route = self.repository / "posts" / "article"
+        route.mkdir(parents=True)
+        (route / "index.html").write_text("<h1>Article</h1>\n")
+        apps = app.discover_preview_apps(self.repository)
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]["path"], str(self.repository))
+        self.assertEqual(
+            apps[0]["command"],
+            'python3 -m http.server "$PORT" --bind 127.0.0.1',
+        )
+
+    def test_detected_javascript_frameworks_receive_the_managed_port(self):
+        cases = {
+            "vite": 'npm run dev -- --host 127.0.0.1 --port "$PORT"',
+            "next dev -p 3000": 'npm run dev -- --hostname 127.0.0.1 --port "$PORT"',
+            "ng serve": 'npm run dev -- --host 127.0.0.1 --port "$PORT"',
+            "react-scripts start": "npm run dev",
+        }
+        for script, expected in cases.items():
+            with self.subTest(script=script):
+                (self.repository / "package.json").write_text(json.dumps({"scripts": {"dev": script}}))
+                self.assertEqual(app.detect_preview_commands(self.repository)[0]["command"], expected)
+
+    def test_old_saved_vite_command_is_upgraded_when_preview_starts(self):
+        (self.repository / "package.json").write_text(json.dumps({"scripts": {"dev": "vite --port 3000"}}))
+        self.assertEqual(
+            app.managed_preview_command(self.repository, "npm run dev"),
+            'npm run dev -- --host 127.0.0.1 --port "$PORT"',
+        )
+        self.assertEqual(
+            app.managed_preview_command(self.repository, "python3 -m http.server 8000"),
+            'python3 -m http.server "$PORT" --bind 127.0.0.1',
+        )
+
+    def test_static_preview_is_available_through_the_office_origin(self):
+        (self.repository / "index.html").write_text('<link rel="stylesheet" href="style.css"><h1>proxied</h1>')
+        (self.repository / "style.css").write_text("h1{color:green}")
+
+        class QuietStaticHandler(SimpleHTTPRequestHandler):
+            def __init__(handler_self, *args, **kwargs):
+                super().__init__(*args, directory=str(self.repository), **kwargs)
+
+            def log_message(handler_self, _format, *_args):
+                pass
+
+        static_server = ThreadingHTTPServer(("127.0.0.1", 0), QuietStaticHandler)
+        static_thread = threading.Thread(target=static_server.serve_forever, daemon=True)
+        static_thread.start()
+        floor_id = "proxy-test"
+        app.preview_processes[floor_id] = {
+            "floorId": floor_id, "path": str(self.repository),
+            "command": 'python3 -m http.server "$PORT" --bind 127.0.0.1',
+            "pid": 1, "port": static_server.server_address[1], "allocatedPort": static_server.server_address[1],
+            "startedAt": app.now_ms(), "status": "running", "lines": [], "detectedPort": False,
+        }
+        office_server = ThreadingHTTPServer(("127.0.0.1", 0), app.OfficeHandler)
+        office_thread = threading.Thread(target=office_server.serve_forever, daemon=True)
+        office_thread.start()
+        base = f"http://127.0.0.1:{office_server.server_address[1]}/api/previews/{floor_id}/view/"
+        try:
+            with urllib.request.urlopen(base, timeout=5) as response:
+                self.assertIn("proxied", response.read().decode())
+            with urllib.request.urlopen(base + "style.css", timeout=5) as response:
+                self.assertEqual(response.headers.get_content_type(), "text/css")
+                self.assertIn("green", response.read().decode())
+            self.assertEqual(app.public_preview(app.preview_processes[floor_id])["previewUrl"], f"/api/previews/{floor_id}/view/")
+        finally:
+            app.preview_processes.pop(floor_id, None)
+            office_server.shutdown(); office_server.server_close(); office_thread.join(timeout=5)
+            static_server.shutdown(); static_server.server_close(); static_thread.join(timeout=5)
+
     def test_shell_job_streams_scoped_output(self):
         job = app.start_shell_job({"path": str(self.repository), "command": "printf 'hello\\n'"})
         for _ in range(100):
@@ -392,15 +489,21 @@ class AgentCommandTests(unittest.TestCase):
         self.assertNotIn("--model", work)
 
     @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
-    def test_codex_floor_intent_fresh_run_uses_sandbox_and_classifier_model(self, _find_cli):
-        command = app.agent_command(
-            "codex", Path("/tmp"), "prompt", "floor_intent", "/tmp/schema", "/tmp/out", {}
-        )
+    def test_codex_floor_intent_uses_account_default_unless_classifier_model_is_pinned(self, _find_cli):
+        with mock.patch.dict(os.environ, {"TASK_OFFICE_CODEX_CLASSIFIER_MODEL": ""}):
+            command = app.agent_command(
+                "codex", Path("/tmp"), "prompt", "floor_intent", "/tmp/schema", "/tmp/out", {}
+            )
         self.assertIn("--sandbox", command)
         self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-        self.assertIn("--model", command)
+        self.assertNotIn("--model", command)
         self.assertIn("--output-schema", command)
         self.assertNotIn("--approve-for-me", command)
+        with mock.patch.dict(os.environ, {"TASK_OFFICE_CODEX_CLASSIFIER_MODEL": "gpt-5.6-luna"}):
+            pinned = app.agent_command(
+                "codex", Path("/tmp"), "prompt", "floor_intent", "/tmp/schema", "/tmp/out", {}
+            )
+        self.assertEqual(pinned[pinned.index("--model") + 1], "gpt-5.6-luna")
 
     @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
     def test_codex_resume_omits_fresh_run_shaping_flags(self, _find_cli):
@@ -493,6 +596,47 @@ class AgentCommandTests(unittest.TestCase):
 
 
 class FloorIntentTests(unittest.TestCase):
+    def test_new_app_workspace_starts_a_main_git_repo_with_committed_brief(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "fresh-app"
+            result = app.create_new_app_workspace({
+                "name": "Fresh App", "destination": str(destination),
+                "brief": "Build a small app with a dashboard.", "sourceName": "idea.md",
+            })
+            self.assertEqual(result["path"], str(destination.resolve()))
+            self.assertTrue((destination / ".git").exists())
+            self.assertIn("Build a small app", (destination / "APP_BRIEF.md").read_text())
+            self.assertIn("idea.md", (destination / "APP_BRIEF.md").read_text())
+            branch = subprocess.check_output(["git", "-C", str(destination), "branch", "--show-current"], text=True).strip()
+            subject = subprocess.check_output(["git", "-C", str(destination), "log", "-1", "--format=%s"], text=True).strip()
+            self.assertEqual((branch, subject), ("main", "Add initial app brief"))
+
+    def test_new_app_workspace_rejects_relative_and_nonempty_destinations(self):
+        with self.assertRaisesRegex(ValueError, "absolute path"):
+            app.create_new_app_workspace({"name": "App", "destination": "relative/app", "brief": "Build it"})
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "occupied"
+            destination.mkdir()
+            (destination / "keep.txt").write_text("mine")
+            with self.assertRaisesRegex(ValueError, "must not exist or must be empty"):
+                app.create_new_app_workspace({"name": "App", "destination": str(destination), "brief": "Build it"})
+
+    def test_explicit_local_floor_request_parses_without_an_agent(self):
+        result = app.parse_floor_intent_locally("add my website from ~/personal/website, use claude.")
+        self.assertEqual(result, {
+            "floors": [{
+                "raw_path_or_url": "~/personal/website", "agent": "claude",
+                "lead_name": None, "floor_name": None,
+            }],
+            "unresolved": None,
+        })
+
+    def test_local_floor_parser_does_not_duplicate_url_paths_or_guess_agent_mapping(self):
+        result = app.parse_floor_intent_locally("add https://github.com/example/repo.git with codex")
+        self.assertEqual(len(result["floors"]), 1)
+        self.assertEqual(result["floors"][0]["raw_path_or_url"], "https://github.com/example/repo.git")
+        self.assertIsNone(app.parse_floor_intent_locally("add ~/one with claude and ~/two with codex"))
+
     def test_url_shaped_input_resolves_to_clone(self):
         resolution = app.resolve_floor_intent("https://github.com/example/repo.git")
         self.assertEqual(resolution["mode"], "clone")
@@ -664,6 +808,25 @@ class VisualPolishTests(unittest.TestCase):
     def setUpClass(cls):
         cls.html = (Path(__file__).parent / "office.html").read_text()
 
+    def test_new_app_from_scratch_flow_is_available(self):
+        for marker in (
+            'Create app from scratch', 'id="newAppDocument"', 'reviewNewAppBrief',
+            "runType:'app_brief'", "fetch('/api/new-app'", 'Create floor &amp; start build',
+            'APP_BRIEF.md', 'syncNewAppBrief',
+        ):
+            self.assertIn(marker, self.html)
+
+    def test_preview_changes_are_employee_tasks_without_direct_edit_controls(self):
+        for marker in (
+            'id="previewAssignEditButton"', 'Assign employee',
+            "enqueueFloorInitiative(floor,`Preview change:", "pending.source==='Live preview'",
+            'item.assignments.length>1 || item.employeeOnly',
+        ):
+            self.assertIn(marker, self.html)
+        self.assertNotIn("fetch('/api/live-edit/edit'", self.html)
+        self.assertNotIn('onclick="undoLiveEdit()"', self.html)
+        self.assertNotIn('onclick="promoteLiveEdit()"', self.html)
+
     def test_ambient_and_personality_features_are_wired_to_rendered_state(self):
         for marker in (
             'document.body.dataset.daypart', 'floorEl.dataset.busy', 'long-idle',
@@ -703,6 +866,44 @@ class VisualPolishTests(unittest.TestCase):
         for marker in (
             'officeGardenMarkup', 'exportPictureDay', 'refreshLocalWeather',
             'screensaver', 'KONAMI_KEYS', "prefers-reduced-motion:reduce",
+        ):
+            self.assertIn(marker, self.html)
+
+    def test_pantry_and_coffee_culture_are_wired_to_floor_state(self):
+        for marker in (
+            'pantryMarkup', 'maybeCoffeeRun', 'workerAtLunch', 'favoriteOrder',
+            'pantryUses', 'pantryIsBroken', 'pantryAnniversaryDays',
+            'desk-food-memento', 'coffee-machine', 'supplies low · restock note posted',
+        ):
+            self.assertIn(marker, self.html)
+
+    def test_revamp_has_content_sized_floor_and_one_source_of_status_truth(self):
+        for marker in (
+            '.ticker-wrap{position:sticky',
+            '.floor-left-col #leadQuestionSection{min-height:0',
+            '.sticky-note.empty{display:none}',
+            'class="floor-identity"',
+            'class="corner-office-label">Manager desk',
+        ):
+            self.assertIn(marker, self.html)
+        self.assertNotIn("${officeWallMarkup(currentFloor)}${deskArea}", self.html)
+        self.assertNotIn("'ready for work'", self.html)
+
+    def test_revamp_uses_shared_pixel_icons_without_raw_emoji(self):
+        for marker in (
+            'function pixelIcon(', '.pixel-icon{', '.icon-trophy::before',
+            '.icon-drink::before', '.icon-pet{', 'data-weather-icon',
+        ):
+            self.assertIn(marker, self.html)
+        self.assertFalse(any(0x1F000 <= ord(char) <= 0x1FAFF for char in self.html))
+        for glyph in ('☀', '☁', '☕', '⚙', '⚠', '✉'):
+            self.assertNotIn(glyph, self.html)
+
+    def test_revamp_floor_focal_point_depth_and_motion_are_active(self):
+        for marker in (
+            '.floor-identity::before', 'repeating-conic-gradient(#679f54',
+            '.manager-card::before', '@keyframes plant-sway',
+            '@keyframes manager-breathe', "classList.toggle('manager-thinking'",
         ):
             self.assertIn(marker, self.html)
 

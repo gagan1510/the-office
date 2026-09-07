@@ -2343,7 +2343,7 @@ async function startFloorPreview(approved=false){
   if(!payload.command){status.textContent='Choose or enter a launch command.';return;}setPreviewControlState('starting');status.textContent='Starting preview server on a free port…';
   try{const response=await fetch('/api/previews/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),data=await response.json();if(!response.ok)throw new Error(data.error||'Preview failed to start');
     if(data.requiresConfirmation){if(window.confirm(`Allow this floor to run its preview shell command?\n\n${data.command}`))return startFloorPreview(true);setPreviewControlState('stopped');status.textContent='Preview launch was not approved.';return;}
-    previewRunning=true;previewSequence=0;setPreviewControlState('running');status.textContent=`Preview live on automatically detected port ${data.port}.`;document.getElementById('previewFrame').src=previewFrameUrl(data);pollFloorPreview();
+    previewRunning=true;previewSequence=0;setPreviewControlState('running');status.textContent=`Preview live on automatically detected port ${data.port}.`;const frame=document.getElementById('previewFrame');frame.dataset.port=String(data.port);frame.src=previewFrameUrl(data);pollFloorPreview();
   }catch(e){setPreviewControlState('stopped');status.textContent=`Preview failed: ${e.message||e}`;}
 }
 async function pollFloorPreview(){

@@ -3486,30 +3486,45 @@ class OfficeHandler(BaseHTTPRequestHandler):
             target = f"http://127.0.0.1:{int(item['port'])}/{relative or ''}"
             if parsed.query:
                 target += "?" + parsed.query
+            upstream = None
+            upstream_error = None
+            retry_deadline = time.monotonic() + 2.0
+            while upstream is None:
+                try:
+                    request = Request(target, headers={"User-Agent": "TheOfficePreview/1.0"})
+                    with urlopen(request, timeout=10) as response:
+                        body = response.read(MAX_STATE_BODY + 1)
+                        if len(body) > MAX_STATE_BODY:
+                            raise ValueError("Preview response is too large.")
+                        upstream = (response.status, {key.lower(): value for key, value in response.headers.items()}, body)
+                except HTTPError as exc:
+                    upstream = (exc.code, {key.lower(): value for key, value in exc.headers.items()}, exc.read(MAX_STATE_BODY))
+                except (URLError, OSError) as exc:
+                    upstream_error = exc
+                    if time.monotonic() >= retry_deadline:
+                        break
+                    time.sleep(0.1)
+                except ValueError as exc:
+                    upstream_error = exc
+                    break
             try:
-                request = Request(target, headers={"User-Agent": "TheOfficePreview/1.0"})
-                with urlopen(request, timeout=10) as response:
-                    body = response.read(MAX_STATE_BODY + 1)
-                    if len(body) > MAX_STATE_BODY:
-                        raise ValueError("Preview response is too large.")
-                    self.send_response(response.status)
-                    for header in ("Content-Type", "Content-Encoding", "Last-Modified"):
-                        value = response.headers.get(header)
-                        if value:
-                            self.send_header(header, value)
-                    self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Cache-Control", "no-store")
-                    self.end_headers()
-                    self.wfile.write(body)
-            except HTTPError as exc:
-                body = exc.read(MAX_STATE_BODY)
-                self.send_response(exc.code)
-                self.send_header("Content-Type", exc.headers.get("Content-Type", "text/plain"))
+                if upstream is None:
+                    self.send_error(HTTPStatus.BAD_GATEWAY, str(upstream_error or "Preview server is unavailable"))
+                    return
+                status, headers, body = upstream
+                self.send_response(status)
+                for header in ("Content-Type", "Content-Encoding", "Last-Modified"):
+                    value = headers.get(header.lower())
+                    if value:
+                        self.send_header(header, value)
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
-            except (URLError, OSError, ValueError) as exc:
-                self.send_error(HTTPStatus.BAD_GATEWAY, str(exc))
+            except (BrokenPipeError, ConnectionResetError):
+                # Navigating/reloading an iframe legitimately cancels its prior
+                # response. The client is already gone, so never attempt a 502.
+                pass
             return
         preview_match = re.fullmatch(r"/api/previews/([^/]+)", parsed.path)
         if preview_match:

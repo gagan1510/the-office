@@ -827,6 +827,9 @@ class VisualPolishTests(unittest.TestCase):
         self.assertNotIn('onclick="undoLiveEdit()"', self.html)
         self.assertNotIn('onclick="promoteLiveEdit()"', self.html)
 
+    def test_preview_start_marks_the_frame_before_polling_to_avoid_duplicate_navigation(self):
+        self.assertIn("frame.dataset.port=String(data.port);frame.src=previewFrameUrl(data);pollFloorPreview()", self.html)
+
     def test_ambient_and_personality_features_are_wired_to_rendered_state(self):
         for marker in (
             'document.body.dataset.daypart', 'floorEl.dataset.busy', 'long-idle',

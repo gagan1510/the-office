@@ -497,6 +497,29 @@ class ReceptionContextTests(unittest.TestCase):
 
 
 class AgentCommandTests(unittest.TestCase):
+    def test_structured_schemas_require_every_declared_property(self):
+        def check(node):
+            if isinstance(node, dict):
+                if node.get('type') == 'object' and 'properties' in node:
+                    self.assertEqual(set(node['properties']), set(node.get('required', [])))
+                    self.assertIs(node.get('additionalProperties'), False)
+                for child in node.values():
+                    check(child)
+            elif isinstance(node, list):
+                for child in node:
+                    check(child)
+        for name, schema in vars(app).items():
+            if name.endswith('_SCHEMA'):
+                with self.subTest(schema=name):
+                    check(schema)
+
+    def test_agent_failure_preserves_provider_error(self):
+        detail = json.dumps({'error': {'message': "Invalid schema: Missing 'paths'."}})
+        for event in ({'type': 'error', 'message': detail},
+                      {'type': 'turn.failed', 'error': {'message': detail}}):
+            self.assertEqual(app.agent_failure_message(event), "Invalid schema: Missing 'paths'.")
+        self.assertIsNone(app.agent_failure_message({'type': 'turn.completed'}))
+
     @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
     def test_claude_classification_is_lightweight_and_work_is_not(self, _find_cli):
         plan = app.agent_command("claude", Path("/tmp"), "prompt", "plan", output_schema={})

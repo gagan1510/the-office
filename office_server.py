@@ -375,7 +375,7 @@ PLAN_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["title", "note", "repositories"],
+                "required": ["title", "note", "repositories", "paths"],
                 "properties": {
                     "title": {"type": "string"},
                     "note": {"type": "string"},
@@ -3186,6 +3186,23 @@ def agent_command(
     )
 
 
+def agent_failure_message(event: dict) -> str | None:
+    if event.get('type') not in ('error', 'turn.failed'):
+        return None
+    detail = event.get('error') or event.get('message')
+    if isinstance(detail, dict):
+        detail = detail.get('message')
+    if isinstance(detail, str):
+        try:
+            decoded = json.loads(detail)
+            if isinstance(decoded, dict) and isinstance(decoded.get('error'), dict):
+                detail = decoded['error'].get('message') or detail
+        except json.JSONDecodeError:
+            pass
+        return detail[:8000]
+    return None
+
+
 def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
     temporary_paths: list[str] = []
     try:
@@ -3239,6 +3256,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
         while True:
             claude_result = None
             final_message = None
+            failure_message = None
             claude_auth_failed = False
             process = subprocess.Popen(
                 command,
@@ -3267,6 +3285,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
                     claude_auth_failed = True
                 try:
                     event = json.loads(line)
+                    failure_message = agent_failure_message(event) or failure_message
                     update_activity_from_event(run, event)
                     discovered_session = agent_adapter.extract_session_id(event)
                     if discovered_session:
@@ -3343,7 +3362,7 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
             run["status"] = "completed" if returncode == 0 else "failed"
             run["result"] = plan_result
             run["finalMessage"] = final_message
-            run["errorMessage"] = None if returncode == 0 else (final_message or f"{run['agent']} exited with code {returncode}")
+            run["errorMessage"] = None if returncode == 0 else (failure_message or final_message or f"{run['agent']} exited with code {returncode}")
             run["endedAt"] = now_ms()
             run["process"] = None
         set_activity(run, "completed" if returncode == 0 else "failed", "Completed" if returncode == 0 else "Agent stopped with an error")

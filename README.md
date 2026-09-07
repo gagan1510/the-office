@@ -11,6 +11,8 @@ It gives every onboarded project a persistent Manager & Tech Lead, a reusable te
 - Onboards an existing Git repository, clones a remote repository, groups several repositories into one project floor, or creates a brand-new app from a refined text brief.
 - Builds durable context about architecture, conventions, tests, risks, and important files before accepting implementation work.
 - Routes a task to the correct project or projects through reception, then lets each project lead plan the work.
+- Uses an optional Office-wide repository context folder to help reception identify affected repositories and propose missing floors for clone/onboarding.
+- Accepts direct floor tasks with optional discussion; **Send it** carries the original notes, completed manager responses, and user follow-ups into task specifications and planning.
 - Reuses persistent Claude Code or Codex sessions so project knowledge carries across questions, reports, and tasks.
 - Delegates independent workstreams to a stable five-agent team while protecting overlapping repository paths.
 - Captures live activity, logs, changed files, test results, token usage, and task history.
@@ -83,6 +85,18 @@ Do not open `office.html` as a `file://` page. Repository access, agent executio
 
 For a guided first run, see [Getting started](docs/getting-started.md).
 
+## Assigning tasks and sharing repository context
+
+For an onboarded floor, enter a task title and click **Send it** to queue work for its manager. **Discuss** is optional. If you discuss first, the completed conversation is included in the task context when you send it, along with any additional text still in the message field. A failed discussion does not prevent direct submission; agent execution errors still need to be resolved before implementation can proceed.
+
+For cross-repository work, use reception. You can configure a shared knowledge folder under **More → Preferences → Repository context folder → Browse folders → Save**. This global setting persists across Office restarts. Clear the path and save to disable it.
+
+The folder can contain your own Markdown, text, RST, YAML, or JSON documents describing repository locations, owners, dependencies, and conventions. Reception uses bounded, task-relevant excerpts to inform routing. Missing repositories are proposed through the existing floor setup screen, where you choose local paths or clone destinations. The original task waits for onboarding and is then routed again. If the context is absent, unavailable, or irrelevant, reception uses normal floor allocation. No organization-specific knowledge is bundled; selected excerpts are sent to your configured agent.
+
+All Codex workflows default to `gpt-6-astra`, including resumed sessions. Use a Codex CLI version that supports Astra; an older executable can reject the model even when discussion or task setup works. `TASK_OFFICE_CODEX_MODEL` overrides the model Office-wide. Claude-configured floors continue to use Claude. See [Agent configuration](docs/configuration.md#agent-configuration).
+
+If a submitted task fails during planning, inspect its profile log for the provider error. The server now surfaces structured agent errors instead of only an exit code. After updating the backend, restart Office and retry the existing failed task; its saved discussion context is retained.
+
 ## Documentation
 
 The repository includes task-oriented documentation for users and operators:
@@ -130,6 +144,12 @@ Run the test suite with:
 
 ```sh
 python3 -m unittest -v test_office_server.py
+```
+
+With Node.js available, also verify the discussion-to-task context handoff:
+
+```sh
+node test_task_context.cjs
 ```
 
 The service is implemented with the Python standard library and plain browser modules, so no package installation or asset build step is required.

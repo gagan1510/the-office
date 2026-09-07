@@ -49,6 +49,18 @@ class PersistenceTests(unittest.TestCase):
             snapshots = app.database.execute("SELECT revision FROM state_snapshots").fetchall()
         self.assertEqual([row["revision"] for row in snapshots], [1])
 
+    def test_reception_context_survives_database_reopen_and_can_be_cleared(self):
+        state = {"schemaVersion": 8, "officePreferences": {"contextPath": "/projects/team-context"}}
+        app.write_office_state({"expectedRevision": 0, "state": state})
+        app.database.close()
+        app.database = None
+        app.initialize_database()
+        restored = app.read_office_state()
+        self.assertEqual(restored["state"]["officePreferences"]["contextPath"], "/projects/team-context")
+        restored["state"]["officePreferences"]["contextPath"] = ""
+        app.write_office_state({"expectedRevision": restored["revision"], "state": restored["state"]})
+        self.assertEqual(app.read_office_state()["state"]["officePreferences"]["contextPath"], "")
+
     def test_preview_start_waits_until_the_server_port_is_listening(self):
         repository = Path(self.temporary_directory.name) / "slow-preview"
         repository.mkdir()
@@ -455,6 +467,35 @@ class GitSafetyTests(unittest.TestCase):
             thread.join(timeout=5)
 
 
+class ReceptionContextTests(unittest.TestCase):
+    def test_optional_and_unavailable_context_fall_back(self):
+        self.assertEqual(app.reception_context({})['text'], '')
+        self.assertEqual(app.reception_context({'path': '/missing-context-folder'})['text'], '')
+
+    def test_context_ranking_and_exclusions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'payments.md').write_text('Billing service lives at /projects/billing. Owns invoices.')
+            (root / 'unrelated.txt').write_text('Garden watering schedule')
+            (root / '.secret.md').write_text('Billing secret')
+            (root / 'linked.md').symlink_to(root / '.secret.md')
+            (root / 'node_modules').mkdir()
+            (root / 'node_modules' / 'notes.md').write_text('Billing dependency')
+            result = app.reception_context({'path': directory, 'task': 'billing invoices'})
+            self.assertEqual(result['files'], ['payments.md'])
+            self.assertIn('/projects/billing', result['text'])
+            self.assertNotIn('secret', result['text'])
+            self.assertEqual(app.reception_context({'path': directory, 'task': 'astronomy'})['text'], '')
+
+    def test_context_output_is_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for index in range(30):
+                (Path(directory) / f'{index}.md').write_text('billing ' * 10000)
+            result = app.reception_context({'path': directory, 'task': 'billing'})
+            self.assertLessEqual(len(result['text']), 64040)
+            self.assertLessEqual(len(result['files']), 20)
+
+
 class AgentCommandTests(unittest.TestCase):
     @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
     def test_claude_classification_is_lightweight_and_work_is_not(self, _find_cli):
@@ -494,29 +535,43 @@ class AgentCommandTests(unittest.TestCase):
         self.assertNotIn("--model", work)
 
     @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
-    def test_codex_floor_intent_uses_account_default_unless_classifier_model_is_pinned(self, _find_cli):
-        with mock.patch.dict(os.environ, {"TASK_OFFICE_CODEX_CLASSIFIER_MODEL": ""}):
+    @mock.patch.dict(os.environ, {"TASK_OFFICE_CODEX_MODEL": ""})
+    def test_every_fresh_codex_workflow_uses_astra(self, _find_cli):
+        run_types = (
+            "work", "chat", "question", "onboard", "plan", "review", "orchestrate",
+            "report", "reception", "floor_call", "floor_intent", "app_brief",
+        )
+        structured_run_types = {
+            "onboard", "plan", "review", "orchestrate", "report", "reception",
+            "floor_call", "floor_intent", "app_brief",
+        }
+        for run_type in run_types:
+            schema = {} if run_type in structured_run_types else None
             command = app.agent_command(
-                "codex", Path("/tmp"), "prompt", "floor_intent", "/tmp/schema", "/tmp/out", {}
+                "codex", Path("/tmp"), "prompt", run_type,
+                "/tmp/schema" if schema is not None else None,
+                "/tmp/out" if schema is not None else None,
+                schema,
             )
-        self.assertIn("--sandbox", command)
-        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-        self.assertNotIn("--model", command)
-        self.assertIn("--output-schema", command)
-        self.assertNotIn("--approve-for-me", command)
-        with mock.patch.dict(os.environ, {"TASK_OFFICE_CODEX_CLASSIFIER_MODEL": "gpt-5.6-luna"}):
-            pinned = app.agent_command(
-                "codex", Path("/tmp"), "prompt", "floor_intent", "/tmp/schema", "/tmp/out", {}
-            )
-        self.assertEqual(pinned[pinned.index("--model") + 1], "gpt-5.6-luna")
+            self.assertEqual(command[command.index("--model") + 1], "gpt-6-astra", run_type)
 
     @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
-    def test_codex_resume_omits_fresh_run_shaping_flags(self, _find_cli):
+    def test_codex_model_override_applies_to_every_workflow(self, _find_cli):
+        with mock.patch.dict(os.environ, {"TASK_OFFICE_CODEX_MODEL": "custom-model"}):
+            for run_type in ("work", "chat", "floor_intent", "review"):
+                command = app.agent_command(
+                    "codex", Path("/tmp"), "prompt", run_type,
+                    "/tmp/schema", "/tmp/out", {},
+                )
+                self.assertEqual(command[command.index("--model") + 1], "custom-model", run_type)
+
+    @mock.patch.object(app, "find_cli", return_value="/usr/bin/agent")
+    def test_codex_resume_uses_astra_and_omits_fresh_run_shaping_flags(self, _find_cli):
         command = app.agent_command(
             "codex", Path("/tmp"), "prompt", "review", "/tmp/schema", "/tmp/out", {}, "session-1"
         )
         self.assertEqual(command[:4], ["/usr/bin/agent", "exec", "resume", "--json"])
-        self.assertNotIn("--model", command)
+        self.assertEqual(command[command.index("--model") + 1], "gpt-6-astra")
         self.assertNotIn("--sandbox", command)
         self.assertNotIn("--approve-for-me", command)
 

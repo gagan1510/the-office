@@ -18,14 +18,17 @@ Claude normally uses the authentication available to its local CLI. If an inheri
 
 ## Agent configuration
 
-Reception, planning, and review use lightweight classifier calls without changing the model used for implementation. Override their defaults with:
+Every Codex workflow uses GPT-6 Astra by default, including implementation, chat, reception, onboarding, planning, review, orchestration, reports, floor calls, floor-intent routing, and new-app briefs. Fresh and resumed sessions use the same model. To pin every Codex workflow to another model, set:
+
+```sh
+export TASK_OFFICE_CODEX_MODEL=gpt-6-astra
+```
+
+Claude remains available for floors explicitly configured to use Claude. Its lightweight classifier model can be changed independently with:
 
 ```sh
 export TASK_OFFICE_CLAUDE_CLASSIFIER_MODEL=haiku
-export TASK_OFFICE_CODEX_CLASSIFIER_MODEL=gpt-5.6-luna
 ```
-
-Codex uses the account-compatible recommended model by default; pinning a classifier model is optional. Set either variable to an empty string to let that CLI select its configured model.
 
 Each floor can configure:
 
@@ -39,6 +42,14 @@ Each floor can configure:
 MCP definitions are passed only to fresh sessions and remain floor-scoped because credentials and external-access policies may differ by project.
 
 Every valid plugin in `the-office-plugins/plugins/` is enabled for full Claude floor runs. Valid custom Claude plugin directories saved on any floor are shared office-wide. Lightweight classification calls remain plugin-free, and Claude plugins are not passed to Codex.
+
+## Reception repository context
+
+Open **More → Preferences → Repository context folder**, use **Browse folders** or enter a path, then **Save**. This Office-wide setting persists across restarts and is used for every new reception task. Previously saved reception context paths carry over automatically. Clear the path and save to disable it. It can be an ordinary local folder of Markdown, text, RST, YAML, or JSON files; it does not need to be a Git repository. Include repository names, exact local paths or clone URLs, ownership, dependencies, and relevant change guidance in your own documents.
+
+Pam uses task-ranked excerpts during discussion and routing. If a necessary repository has no floor, reception opens the normal floor setup review, where you can choose its clone destination or local folder. The original task remains queued and is routed again after the required floors finish onboarding. Pending repository reviews can be reopened from New task. Existing repositories are not automatically pulled or overwritten.
+
+Empty, unavailable, or irrelevant context falls back to normal allocation among onboarded floors. Lookup scans up to 2,000 file entries and includes up to 20 matching/index documents within a 64,000-character excerpt budget; it is not an exhaustive search of arbitrarily large folders. Hidden directories and files, symlinks, and common dependency folders are skipped. Selected excerpts are sent to the configured reception agent. The knowledge folder stays external to this project; no organization-specific knowledge is bundled.
 
 ## New apps from scratch
 

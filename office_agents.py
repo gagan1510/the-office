@@ -9,6 +9,14 @@ from pathlib import Path
 from typing import Callable
 
 
+DEFAULT_CODEX_MODEL = "gpt-6-astra"
+
+
+def codex_model() -> str:
+    """Return the single model used by every Codex workflow in the Office."""
+    return os.environ.get("TASK_OFFICE_CODEX_MODEL", DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+
+
 class AgentAdapter:
     name = ""
 
@@ -97,13 +105,14 @@ class CodexAdapter(AgentAdapter):
     def command(self, executable: str, repository: Path, prompt: str, run_type: str, **options) -> list[str]:
         session_id = options.get("session_id")
         schema_path, output_path = options.get("schema_path"), options.get("output_path")
+        model = codex_model()
         structured = run_type in ("onboard", "plan", "review", "orchestrate", "report", "reception", "floor_call", "floor_intent", "app_brief")
         if session_id:
-            command = [executable, "exec", "resume", "--json"]
+            command = [executable, "exec", "resume", "--json", "--model", model]
             if structured:
                 command += ["--output-schema", schema_path, "-o", output_path]
             return command + [session_id, prompt]
-        command = [executable, "exec", "--json"]
+        command = [executable, "exec", "--json", "--model", model]
         options["add_codex_mcp_overrides"](command, options.get("mcp_servers") or [])
         if run_type in ("onboard", "plan", "review", "chat", "question", "report", "reception", "floor_call", "floor_intent", "app_brief"):
             command += ["--sandbox", "read-only"]
@@ -117,13 +126,6 @@ class CodexAdapter(AgentAdapter):
                 command += ["--skip-git-repo-check"]
             if run_type == "orchestrate":
                 command += ["--output-schema", schema_path, "-o", output_path]
-        if run_type in ("reception", "plan", "review", "floor_intent", "app_brief"):
-            # Let Codex choose an account-compatible recommended model unless
-            # the operator explicitly pins one. Model availability varies by
-            # authentication method and changes over time.
-            model = os.environ.get("TASK_OFFICE_CODEX_CLASSIFIER_MODEL", "").strip()
-            if model:
-                command += ["--model", model]
         return command + ["-C", str(repository), prompt]
 
     def parse_activity(self, event: dict, command_activity: Callable[[object], tuple[str, str]]) -> tuple[str, str] | None:

@@ -87,7 +87,9 @@ export TASK_OFFICE_HISTORY_SESSION_LIMIT=10
 export TASK_OFFICE_HISTORY_BYTES_PER_SESSION=262144
 ```
 
-Imported session IDs are recorded with the floor so future refreshes process only newly discovered sessions.
+Combined history is limited to 60,000 characters, shared across selected sessions, leaving room for onboarding instructions within the run request limit. Oversized sessions contribute their recent text; the activity log reports when excerpts are shortened. This is an excerpt import, not a full-history summary.
+
+Session IDs whose excerpts were included are recorded with the floor after successful onboarding so future refreshes process only newly discovered sessions. Empty extractions are not marked imported.
 
 ## Lifecycle hooks
 

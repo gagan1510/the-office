@@ -117,6 +117,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(app.latest_session_id("lead:floor-1", "codex"), "session-1")
 
     def test_session_usage_counts_persisted_turns(self):
+        run_ids = []
         for index in range(2):
             run = {
                 "profileId": "lead:floor-1", "agent": "codex", "task": f"turn {index}",
@@ -129,9 +130,15 @@ class PersistenceTests(unittest.TestCase):
             }
             app.persist_run_started(run)
             app.persist_run_status(run)
+            run_ids.append(run["databaseRunId"])
         restored = app.persisted_run("lead:floor-1")
         self.assertEqual(restored["sessionTurns"], 2)
         self.assertEqual(restored["sessionInputTokens"], 20)
+        first = app.persisted_run("", since=999999999, run_id=run_ids[0])
+        self.assertEqual(first["task"], "turn 0")
+        self.assertEqual(first["databaseRunId"], run_ids[0])
+        self.assertEqual(first["logs"], [])
+        self.assertIsNone(app.persisted_run("", run_id=999999999))
 
     def test_state_http_api(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), app.OfficeHandler)
@@ -856,6 +863,32 @@ class FloorIntentTests(unittest.TestCase):
 
 
 class LocalHistoryAndSpecTests(unittest.TestCase):
+    def test_combined_history_fits_onboarding_request_budget(self):
+        sources = [{'agent': agent, 'sessions': [{'session_id': f'{agent}-{i}'} for i in range(10)]}
+                   for agent in ('claude', 'codex')]
+        sessions = {source['agent']: [item['session_id'] for item in source['sessions']] for source in sources}
+        adapter = mock.Mock()
+        adapter.extract_local_history.side_effect = lambda item, limit: 'old' * 100000 + 'Recent decision for ' + item['session_id']
+        with mock.patch.object(app, 'local_history_manifest', return_value={'sources': sources}), mock.patch.object(app, 'adapter_for', return_value=adapter):
+            result = app.local_history_content({'sessions': sessions})
+        self.assertLessEqual(len(result['context']), app.MAX_HISTORY_CONTEXT_CHARS)
+        self.assertTrue(result['truncated'])
+        self.assertTrue(result['warning'])
+        self.assertEqual(result['imported'], sessions)
+        for ids in sessions.values():
+            for session_id in ids:
+                self.assertIn('Recent decision for ' + session_id, result['context'])
+
+    def test_small_history_is_preserved_and_empty_sessions_are_not_marked_imported(self):
+        source = {'agent': 'codex', 'sessions': [{'session_id': 'small'}, {'session_id': 'empty'}]}
+        adapter = mock.Mock()
+        adapter.extract_local_history.side_effect = ['Complete history with decisions.', '']
+        with mock.patch.object(app, 'local_history_manifest', return_value={'sources': [source]}), mock.patch.object(app, 'adapter_for', return_value=adapter):
+            result = app.local_history_content({'sessions': {'codex': ['small', 'empty', 'unselected']}})
+        self.assertIn('Complete history with decisions.', result['context'])
+        self.assertFalse(result['truncated'])
+        self.assertEqual(result['imported'], {'codex': ['small']})
+
     def test_claude_history_detection_and_bounded_extraction(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);repo=root/"repo";repo.mkdir();projects=root/"claude"/"projects";project=projects/str(repo.resolve()).replace(os.sep,"-");project.mkdir(parents=True)

@@ -18,10 +18,12 @@ It gives every onboarded project a persistent Manager & Tech Lead, a reusable te
 - Captures live activity, logs, changed files, test results, token usage, and task history.
 - Creates a recoverable Git checkpoint before implementation and retains an immutable completion snapshot.
 - Presents the real working-tree diff for review, including selectable hunks, before anything is published.
+- Recovers pending reviews after reloads and surfaces both approved results and reviews with blockers.
+- Optionally monitors published PR checks, reports failures, and proposes employee fixes for your approval.
 - Runs a floor's app in an embedded live preview, streams its console, and provides a small OpenAPI-aware backend request tester.
 - Converts every change requested from live preview into a floor employee task with ordinary checkpoints and review; preview never edits through a privileged direct-agent path.
 - Keeps rejected edits local and allows a completed run to be restored to its pre-run checkpoint.
-- Pushes a task branch and opens GitHub pull requests only after explicit confirmation.
+- Pushes a task branch and opens GitHub pull requests after confirmation, or under an explicitly configured clean-review auto-publish policy.
 - Stores floors, project context, conversations, runs, logs, and settings in a local SQLite database.
 
 The Office also supports read-only codebase questions, implementation reports, Markdown specification trackers, repository file and Git tools, scoped command execution, lifecycle hooks, per-floor permissions, MCP servers, and Claude plugins.
@@ -60,7 +62,7 @@ The lead coordinates and reviews rather than implementing directly. Cross-projec
 - At least one locally authenticated agent CLI:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
   - [Codex CLI](https://github.com/openai/codex)
-- GitHub CLI (`gh`), only when creating pull requests from The Office
+- Authenticated GitHub CLI (`gh`), when creating pull requests or monitoring their checks
 
 The Python service has no third-party package dependencies. `requirements.txt` is intentionally empty apart from explanatory comments.
 
@@ -97,6 +99,27 @@ All Codex workflows default to `gpt-6-astra`, including resumed sessions. Use a 
 
 If a submitted task fails during planning, inspect its profile log for the provider error. The server now surfaces structured agent errors instead of only an exit code. After updating the backend, restart Office and retry the existing failed task; its saved discussion context is retained.
 
+## Onboarding and live activity
+
+Click the Manager & Tech Lead card to see live activity, including while it is learning a codebase. Switching a floor between Claude and Codex clears provider-specific lead and employee sessions and starts fresh onboarding; provider changes are blocked while the lead is active.
+
+Imported conversation history shares a 60,000-character onboarding budget across selected sessions. Large sessions contribute recent excerpts, and Office reports when history is shortened. This prevents oversized history imports from exhausting the run request budget; it is not a full-history summary. See [History configuration](docs/configuration.md#local-history-import).
+
+## Reviewing, publishing, and monitoring PRs
+
+Completed reviews survive browser reloads: Office reconnects to the saved run instead of rerunning implementation. Both approved reviews and results with blockers open the review dialog. Inspect the real diff and select the files or hunks you want to publish; rejected changes remain local.
+
+For a blocked review, **Push anyway & create PR** offers an explicit override. You must confirm the unresolved findings, which are included in the PR description. Automatic publishing still requires a clean review; an override does not mark the underlying review as approved.
+
+Enable **Monitor published PR checks** in the review dialog before or after publishing. Reopen **PR created · checks**, or use the floor's **PR checks** button to inspect older PRs even while another task is running.
+
+- Monitoring is optional, persists across reloads, and polls about once a minute per PR while the Office page is open. It stops for closed or merged PRs and resumes enabled monitoring when you reopen Office.
+- Failures produce notifications and show failed checks, available GitHub Actions log excerpts, and suggested next steps. Suggestions are evidence-based investigation guidance, not a verified root-cause diagnosis. Missing checks remain waiting; connectivity and authentication errors are not reported as passing tests.
+- **Assign fix to employees…** asks for confirmation before queuing implementation through the normal floor employee workflow. The task includes the PR, commit, failure evidence, and suggested investigation. Repeated polls do not duplicate alerts or fix tasks for the same failure.
+- CI fixes require human review before publishing, even on a floor that otherwise auto-publishes clean reviews. Monitoring itself never modifies code, pushes, or merges.
+
+Monitoring uses your authenticated `gh` through read-only [PR inspection](https://cli.github.com/manual/gh_pr_view) and [failed-job log inspection](https://cli.github.com/manual/gh_run_view). Restart the Python service and refresh the browser after updating Office to load backend and UI changes together.
+
 ## Documentation
 
 The repository includes task-oriented documentation for users and operators:
@@ -129,6 +152,7 @@ Key source areas:
 ```text
 office_server.py   Local HTTP service and agent-run orchestration
 office_agents.py   Claude Code and Codex adapters
+office_pr_checks.py Read-only GitHub check inspection and suggested next steps
 office_backend/    Persistence, Git, repository, and HTTP modules
 office.html        Browser application shell and shared workflow state
 ui/                Build-free UI modules
@@ -143,13 +167,16 @@ docs/              User and operator documentation
 Run the test suite with:
 
 ```sh
-python3 -m unittest -v test_office_server.py
+python3 -m unittest -v
 ```
 
-With Node.js available, also verify the discussion-to-task context handoff:
+With Node.js available, also verify task context, review recovery, publishing overrides, and PR-monitoring approval flows:
 
 ```sh
 node test_task_context.cjs
+node test_review_recovery.cjs
+node test_review_override.cjs
+node test_pr_monitor.cjs
 ```
 
 The service is implemented with the Python standard library and plain browser modules, so no package installation or asset build step is required.

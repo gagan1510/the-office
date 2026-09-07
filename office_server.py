@@ -35,6 +35,7 @@ from office_backend.repos import normalized_path_claims, path_claims_overlap, sc
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 1_000_000
+MAX_HISTORY_CONTEXT_CHARS = 60_000
 MAX_STATE_BODY = 20_000_000
 SUPPORTED_RUN_TYPES = (
     "work", "chat", "question", "onboard", "plan", "review", "orchestrate",
@@ -683,12 +684,13 @@ def persist_run_status(run: dict) -> None:
         connection.commit()
 
 
-def persisted_run(profile_id: str, since: int = 0) -> dict | None:
+def persisted_run(profile_id: str, since: int = 0, run_id: int | None = None) -> dict | None:
     with database_lock:
         connection = require_database()
         row = connection.execute(
+            "SELECT * FROM agent_runs WHERE id=?" if run_id is not None else
             "SELECT * FROM agent_runs WHERE profile_id=? ORDER BY started_at DESC LIMIT 1",
-            (profile_id,),
+            (run_id,) if run_id is not None else (profile_id,),
         ).fetchone()
         if not row:
             return None
@@ -1428,19 +1430,36 @@ def local_history_content(data: dict) -> dict:
     requested = data.get("sessions") or {}
     if not isinstance(requested, dict): raise ValueError("sessions must map agents to session IDs.")
     byte_limit = max(16_384, min(2_000_000, int(os.environ.get("TASK_OFFICE_HISTORY_BYTES_PER_SESSION", "262144"))))
-    sections, imported = [], {}
+    sections, imported, selected_sessions = [], {}, []
     for source in manifest["sources"]:
         agent = source["agent"]
         ids = requested.get(agent) or []
         if not isinstance(ids, list): raise ValueError("Selected session IDs must be lists.")
         allowed = {str(value) for value in ids}
         selected = [item for item in source["sessions"] if item["session_id"] in allowed]
-        texts = [adapter_for(agent).extract_local_history(item, byte_limit) for item in selected]
-        texts = [text for text in texts if text]
-        if texts:
-            sections.append(f"Prior {agent} conversation history (bounded, tool output removed):\n" + "\n\n--- session ---\n\n".join(texts))
-        imported[agent] = [item["session_id"] for item in selected]
-    return {"context":"\n\n".join(sections),"imported":imported,"byteLimitPerSession":byte_limit}
+        selected_sessions.extend((agent, item) for item in selected)
+    # Share the total budget across sessions so one large transcript cannot
+    # crowd out every other repository/session or exceed the run request limit.
+    per_session = MAX_HISTORY_CONTEXT_CHARS // max(1, len(selected_sessions))
+    truncated = False
+    marker = '[Earlier history omitted to fit the onboarding budget.]\n'
+    for agent, item in selected_sessions:
+        text = adapter_for(agent).extract_local_history(item, byte_limit)
+        if not text:
+            continue
+        header = f"Prior {agent} session {item['session_id']} (recent excerpt; tool output removed):\n"
+        available = max(0, per_session - len(header) - len(marker) - 2)
+        if not available:
+            truncated = True
+            continue
+        if len(text) > available:
+            text = marker + text[-available:]
+            truncated = True
+        sections.append(header + text)
+        imported.setdefault(agent, []).append(item['session_id'])
+    return {"context":"\n\n".join(sections),"imported":imported,"byteLimitPerSession":byte_limit,
+            "contextCharacterLimit":MAX_HISTORY_CONTEXT_CHARS,"truncated":truncated,
+            "warning":"Selected history exceeds the onboarding budget; using recent excerpts from each nonempty session." if truncated else ""}
 
 
 def checked_command(command: list[str], cwd: Path, timeout: int = 300) -> str:
@@ -3498,6 +3517,22 @@ class OfficeHandler(BaseHTTPRequestHandler):
             except ValueError:
                 limit = 50
             self.json_response(persisted_run_history(limit))
+            return
+        if parsed.path == "/api/pr-checks":
+            from office_pr_checks import inspect_pr
+            try:
+                url = parse_qs(parsed.query).get("url", [""])[0]
+                self.json_response(inspect_pr(url, find_cli("gh"), agent_environment()))
+            except ValueError as exc:
+                self.json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.json_response({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        run_match = re.fullmatch(r"/api/runs/(\d+)", parsed.path)
+        if run_match:
+            data = persisted_run("", since=999999999, run_id=int(run_match.group(1)))
+            self.json_response(data or {"error": "Run not found"},
+                               HTTPStatus.OK if data else HTTPStatus.NOT_FOUND)
             return
         if parsed.path == "/api/repo-diff":
             try:

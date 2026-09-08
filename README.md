@@ -11,6 +11,7 @@ It gives every onboarded project a persistent Manager & Tech Lead, a reusable te
 - Onboards an existing Git repository, clones a remote repository, groups several repositories into one project floor, or creates a brand-new app from a refined text brief.
 - Builds durable context about architecture, conventions, tests, risks, and important files before accepting implementation work.
 - Routes a task to the correct project or projects through reception, then lets each project lead plan the work.
+- Pauses ambiguous tasks with persistent **Needs your input** cards, shares answers across related floors, and resumes planning when you click **Continue**.
 - Uses an optional Office-wide repository context folder to help reception identify affected repositories and propose missing floors for clone/onboarding.
 - Accepts direct floor tasks with optional discussion; **Send it** carries the original notes, completed manager responses, and user follow-ups into task specifications and planning.
 - Reuses persistent Claude Code or Codex sessions so project knowledge carries across questions, reports, and tasks.
@@ -39,6 +40,8 @@ Repository ownership is identified
         v
 Each Manager & Tech Lead plans its project work
         |
+        +-- Missing decision → Needs your input → Continue planning
+        |
         v
 One or more agents implement and verify changes
         |
@@ -64,7 +67,7 @@ The lead coordinates and reviews rather than implementing directly. Cross-projec
   - [Codex CLI](https://github.com/openai/codex)
 - Authenticated GitHub CLI (`gh`), when creating pull requests or monitoring their checks
 
-The Python service has no third-party package dependencies. `requirements.txt` is intentionally empty apart from explanatory comments.
+The Python service uses only the standard library; no Python package installation is needed.
 
 ## Quick start
 
@@ -90,6 +93,8 @@ For a guided first run, see [Getting started](docs/getting-started.md).
 ## Assigning tasks and sharing repository context
 
 For an onboarded floor, enter a task title and click **Send it** to queue work for its manager. **Discuss** is optional. If you discuss first, the completed conversation is included in the task context when you send it, along with any additional text still in the message field. A failed discussion does not prevent direct submission; agent execution errors still need to be resolved before implementation can proceed.
+
+If planning needs a user decision, a **Needs your input** card appears below reception. Choose a suggested answer or type your own, then click **Continue**. Questions, draft answers, and submitted decisions are saved across reloads. Clear tasks proceed automatically; minor assumptions are included in the plan. For reception tasks, related floors finish intake before implementation starts, and submitted answers are shared across those routes. Unrelated queued tasks can continue while a task waits for input.
 
 For cross-repository work, use reception. You can configure a shared knowledge folder under **More → Preferences → Repository context folder → Browse folders → Save**. This global setting persists across Office restarts. Clear the path and save to disable it.
 
@@ -117,6 +122,7 @@ Enable **Monitor published PR checks** in the review dialog before or after publ
 - Failures produce notifications and show failed checks, available GitHub Actions log excerpts, and suggested next steps. Suggestions are evidence-based investigation guidance, not a verified root-cause diagnosis. Missing checks remain waiting; connectivity and authentication errors are not reported as passing tests.
 - **Assign fix to employees…** asks for confirmation before queuing implementation through the normal floor employee workflow. The task includes the PR, commit, failure evidence, and suggested investigation. Repeated polls do not duplicate alerts or fix tasks for the same failure.
 - CI fixes require human review before publishing, even on a floor that otherwise auto-publishes clean reviews. Monitoring itself never modifies code, pushes, or merges.
+- After CI fixes are reviewed, **Push fix to existing PR** commits selected changes to that PR's existing source branch and pushes without creating another branch or PR. Office verifies the source repository, current branch, remote PR head, and reviewed patch before publishing. A mismatch stops the operation; Office never force-pushes or merges. Monitoring refreshes after a successful push if enabled. A failed push preserves the local commit and reports it for manual recovery.
 
 Monitoring uses your authenticated `gh` through read-only [PR inspection](https://cli.github.com/manual/gh_pr_view) and [failed-job log inspection](https://cli.github.com/manual/gh_run_view). Restart the Python service and refresh the browser after updating Office to load backend and UI changes together.
 
@@ -170,13 +176,16 @@ Run the test suite with:
 python3 -m unittest -v
 ```
 
-With Node.js available, also verify task context, review recovery, publishing overrides, and PR-monitoring approval flows:
+With Node.js available, also verify task context, clarification and cross-floor intake, review recovery, publishing overrides, and PR-monitoring flows:
 
 ```sh
 node test_task_context.cjs
+node test_task_clarification.cjs
 node test_review_recovery.cjs
 node test_review_override.cjs
 node test_pr_monitor.cjs
+node test_worker_review_handoff.cjs
+node test_pr_fix_publish.cjs
 ```
 
 The service is implemented with the Python standard library and plain browser modules, so no package installation or asset build step is required.

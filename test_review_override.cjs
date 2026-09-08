@@ -12,6 +12,8 @@ async function scenario({ready=false, issues=['Tests blocked'], confirm=true, pu
   const context = {floors:[floor], document:{getElementById:element},
     loadReviewDiffs(){},reviewSelections:()=>({'.':{accepted:['patch']}}),
     trackPublishedPrs(){}, renderPrChecks(){},
+    prCheckLink:(url,label)=>label,
+    reviewPrFixUrl:()=>null,
     floorRepository:()=>({path:'/repo'}),
     window:{confirm:message=>{confirmations.push(message);return confirm;}},
     fetch:async(url,options)=>{requests.push(JSON.parse(options.body));return {ok:true,json:async()=>({pullRequest:'https://example.test/pr/1'})};},

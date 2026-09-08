@@ -365,13 +365,25 @@ def write_office_state(payload: dict) -> dict:
 PLAN_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["decision", "reason", "workstreams", "floor_calls"],
+    "required": ["decision", "reason", "workstreams", "floor_calls", "questions", "assumptions"],
     "properties": {
-        "decision": {"type": "string", "enum": ["single", "multi"]},
+        "decision": {"type": "string", "enum": ["single", "multi", "needs_input"]},
         "reason": {"type": "string"},
+        "assumptions": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+        "questions": {
+            "type": "array", "maxItems": 3,
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["question", "options"],
+                "properties": {
+                    "question": {"type": "string"},
+                    "options": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+                },
+            },
+        },
         "workstreams": {
             "type": "array",
-            "minItems": 1,
+            "minItems": 0,
             "maxItems": 5,
             "items": {
                 "type": "object",
@@ -2896,6 +2908,62 @@ def publish_repository(
     }
 
 
+def pr_fix_target(data: dict) -> dict:
+    url = str(data.get("pullRequest", ""))
+    match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)/?", url)
+    if not match:
+        raise ValueError("A GitHub pull-request URL is required.")
+    repository = existing_repo_path(data.get("repository") or {})
+    gh, git = find_cli("gh"), git_executable()
+    if not gh:
+        raise ValueError("Authenticated GitHub CLI is required.")
+    pr = json.loads(checked_command([gh, "pr", "view", match[2], "--repo", match[1],
+        "--json", "state,headRefName,headRefOid,headRepository,headRepositoryOwner,baseRefName"], repository))
+    if pr.get("state") != "OPEN":
+        raise ValueError("This PR is no longer open.")
+    owner = (pr.get("headRepositoryOwner") or {}).get("login")
+    name = (pr.get("headRepository") or {}).get("name")
+    if not owner or not name:
+        raise ValueError("The PR source repository is unavailable.")
+    source = f"{owner}/{name}".lower()
+    # Validate both fetch and push URLs: a pushurl can point somewhere else.
+    for args in (["remote", "get-url", "origin"], ["remote", "get-url", "--push", "--all", "origin"]):
+        urls = checked_command([git, *args], repository).splitlines()
+        for remote in urls:
+            remote_match = re.fullmatch(r"(?:git@github\.com:|https://github\.com/|ssh://git@github\.com/)([\w.-]+/[\w.-]+?)(?:\.git)?/?", remote)
+            if not remote_match or remote_match[1].lower() != source:
+                raise ValueError("This checkout's origin does not match the PR source repository.")
+    branch = pr.get("headRefName", "")
+    if not valid_branch_name(branch) or checked_command([git, "branch", "--show-current"], repository) != branch:
+        raise ValueError("Checkout must already be on the existing PR source branch; no branch is switched automatically.")
+    head = checked_command([git, "rev-parse", "HEAD"], repository)
+    if head != pr.get("headRefOid"):
+        raise ValueError("Local HEAD differs from the PR head. Reconcile the branch and review again; no changes were committed or pushed.")
+    return {"pullRequest": url, "branch": branch, "head": head,
+            "destinationBranch": pr.get("baseRefName"), "repository": str(repository)}
+
+
+def push_pr_fix(data: dict) -> dict:
+    target = pr_fix_target(data)
+    if not data.get("expectedHead") or data["expectedHead"] != target["head"]:
+        raise ValueError("The PR head changed since confirmation. Reload the review before pushing.")
+    title = str(data.get("title", "")).strip()
+    if not title or len(title) > 240 or not isinstance(data.get("selection"), dict):
+        raise ValueError("A commit title and reviewed patch selection are required.")
+    repository, git = Path(target["repository"]), git_executable()
+    stage_selected_changes(repository, data["selection"], git)
+    message = title
+    if data.get("reviewOverride"):
+        message += "\n\nReview override approved by user:\n" + str(data["reviewOverride"])[:12000]
+    checked_command([git, "commit", "-m", message], repository)
+    commit = checked_command([git, "rev-parse", "HEAD"], repository)
+    try:
+        checked_command([git, "push", "origin", f"{commit}:refs/heads/{target['branch']}"], repository, timeout=900)
+    except Exception as exc:
+        raise RuntimeError(f"Fix committed locally as {commit}, but push failed. The commit is preserved; reconcile/retry the push manually. {exc}") from exc
+    return {**target, "head": commit, "updatedExistingPr": True}
+
+
 def publish_changes(data: dict) -> dict:
     branch, destination_branch, title, body, git, gh = validate_publish_details(data)
     repository = existing_repo_path(data.get("repository") or {})
@@ -3344,8 +3412,19 @@ def run_agent(run: dict, repository_spec: dict, prompt: str) -> None:
                 candidate = json.loads(candidate)
             if not isinstance(candidate, dict):
                 raise RuntimeError("Tech lead returned invalid structured output.")
-            if run["runType"] == "plan" and candidate.get("decision") not in ("single", "multi"):
+            if run["runType"] == "plan" and candidate.get("decision") not in ("single", "multi", "needs_input"):
                 raise RuntimeError("Tech lead returned an invalid work plan.")
+            if run["runType"] == "plan":
+                questions = candidate.get("questions", [])
+                streams = candidate.get("workstreams", [])
+                if candidate.get("decision") == "needs_input":
+                    if not isinstance(questions, list) or not 1 <= len(questions) <= 3 or streams or candidate.get("floor_calls"):
+                        raise RuntimeError("Clarification must contain questions and no implementation or floor calls.")
+                    for question in questions:
+                        if not isinstance(question, dict) or not isinstance(question.get("question"), str) or not question["question"].strip() or not isinstance(question.get("options"), list) or len(question["options"]) > 3 or any(not isinstance(option, str) for option in question["options"]):
+                            raise RuntimeError("The lead returned an invalid clarification question.")
+                elif questions or not isinstance(streams, list) or not streams:
+                    raise RuntimeError("A work plan must contain workstreams and no unresolved questions.")
             if run["runType"] == "onboard" and not isinstance(candidate.get("summary"), str):
                 raise RuntimeError("Tech lead returned invalid repository context.")
             if run["runType"] in ("review", "orchestrate") and not isinstance(candidate.get("ready"), bool):
@@ -3775,6 +3854,12 @@ class OfficeHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/publish":
                 self.json_response(publish_changes(data))
+                return
+            if parsed.path == "/api/pr-fix-target":
+                self.json_response(pr_fix_target(data))
+                return
+            if parsed.path == "/api/push-pr-fix":
+                self.json_response(push_pr_fix(data))
                 return
             if parsed.path == "/api/publish-cupboard":
                 self.json_response(publish_cupboard(data))

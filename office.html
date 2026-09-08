@@ -708,6 +708,21 @@
     font-size:11px; line-height:1.45; white-space:pre-wrap;
   }
   .review-issues{ margin-top:8px; background:#F4D7C1; }
+  .modal label.pr-monitor-toggle{ display:flex; align-items:center; gap:10px; margin:12px 0; padding:10px; cursor:pointer; text-transform:none; }
+  .modal .pr-monitor-toggle input[type="checkbox"]{ width:18px; height:18px; flex:0 0 18px; padding:0; margin:0; accent-color:#287C8E; cursor:pointer; }
+  .pr-monitor-toggle:focus-within{ outline:2px solid var(--lead); outline-offset:2px; }
+  .review-summary.pr-checks-panel{ white-space:normal; }
+  .pr-check-card + .pr-check-card{ border-top:1px solid #887F72; margin-top:14px; padding-top:14px; }
+  .pr-check-card a,.publish-status a{ color:#195866; text-decoration:underline; overflow-wrap:anywhere; }
+  .pr-check-card a:focus-visible,.publish-status a:focus-visible{ outline:2px solid var(--lead); outline-offset:3px; }
+  .pr-check-list{ list-style:none; padding:0; margin:10px 0; }
+  .pr-check-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid #c9c1b6; }
+  .pr-check-name{ min-width:0; overflow-wrap:anywhere; font-weight:700; }
+  .pr-check-status{ flex:none; padding:3px 7px; border:1px solid #887F72; background:#eee8dc; font-size:10px; }
+  .pr-check-status[data-tone="success"]{ background:#d9ebd3; color:#204820; }
+  .pr-check-status[data-tone="failure"]{ background:#f4d7c1; color:#702a15; }
+  .pr-check-status[data-tone="pending"]{ background:#fff1ba; color:#594500; }
+  .pr-check-evidence{ white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; }
   .publish-warning{
     margin:12px 0; padding:9px; border:2px solid #000; background:var(--sticky);
     font-size:10px; font-weight:700; line-height:1.4;
@@ -1464,11 +1479,11 @@
       <input id="reviewPrTitle" type="text" maxlength="240">
       <label for="reviewPrBody">Pull-request description</label>
       <textarea id="reviewPrBody"></textarea>
-      <div class="publish-warning">Continuing will create or switch to the source branch, commit the selected changes, push to origin, and create a GitHub pull request into the destination branch. Publishing with blockers requires your explicit confirmation.</div>
+      <div class="publish-warning" id="reviewPublishWarning">Continuing will create or switch to the source branch, commit the selected changes, push to origin, and create a GitHub pull request into the destination branch. Publishing with blockers requires your explicit confirmation.</div>
     </div>
     <div class="publish-status" id="reviewPublishStatus"></div>
-    <label><input type="checkbox" id="reviewMonitorChecks" onchange="setPrMonitoring(this.checked)"> Monitor published PR checks (while Office is open)</label>
-    <div id="reviewPrChecks" class="review-summary"></div>
+    <label class="pr-monitor-toggle" for="reviewMonitorChecks"><input type="checkbox" id="reviewMonitorChecks" onchange="setPrMonitoring(this.checked)"><span>Monitor published PR checks (while Office is open)</span></label>
+    <div id="reviewPrChecks" class="review-summary pr-checks-panel"></div>
     <div class="modal-actions">
       <button onclick="closeReviewModal()"> Later</button>
       <button id="previewReviewButton" onclick="openLivePreview(reviewingFloorId,true)"> Preview this before deciding</button>
@@ -1480,8 +1495,8 @@
 <div class="modal-backdrop" id="prChecksBackdrop">
   <div class="modal">
     <h2>Published PR checks</h2>
-    <label><input type="checkbox" id="prChecksEnabled" onchange="setPrMonitoring(this.checked)"> Monitor checks while Office is open</label>
-    <div id="prChecksHistory" class="review-summary"></div>
+    <label class="pr-monitor-toggle" for="prChecksEnabled"><input type="checkbox" id="prChecksEnabled" onchange="setPrMonitoring(this.checked)"><span>Monitor checks while Office is open</span></label>
+    <div id="prChecksHistory" class="review-summary pr-checks-panel"></div>
     <div class="modal-actions"><button onclick="document.getElementById('prChecksBackdrop').classList.remove('open');reviewingFloorId=null;">Close</button></div>
   </div>
 </div>
@@ -3305,11 +3320,24 @@ async function stopProfileAgent(){
   await refreshProfileLog();
 }
 
+function reconcileWorkerSessionMode(worker){
+  const task = worker.tasks[0];
+  if(!task) return false;
+  const floor = floors.find(item=>item.id===worker.floorId);
+  const tracker = (floor?.multiInitiatives || []).find(item=>item.id===task.initiativeId);
+  const shared = task.kind==='report' ? false : typeof task.sharedLeadSession==='boolean'
+    ? task.sharedLeadSession : tracker ? !!tracker.sharedSession : false;
+  if(worker.sharedLeadSession===shared) return false;
+  worker.sharedLeadSession = shared;
+  return true;
+}
+
 async function syncWorkerRuntime(){
   if(location.protocol==='file:' || !workers.length) return;
   let changed = false;
   await Promise.all(workers.filter(w=>w.tasks.length).map(async w=>{
     try{
+      if(reconcileWorkerSessionMode(w)) changed = true;
       const profileId = w.sharedLeadSession ? `lead:${w.floorId}` : `worker:${w.id}`;
       const response = await fetch(`/api/logs?profileId=${encodeURIComponent(profileId)}&since=999999999`, { cache:'no-store' });
       if(!response.ok) return;
@@ -3618,6 +3646,8 @@ async function checkOnboardingDrift(floor){
 async function startWorkerAgent(worker, task){
   const floor = floors.find(f=>f.id===worker.floorId);
   if(!floor || !task) return false;
+  // The active task owns the execution mode, not the employee's previous job.
+  worker.sharedLeadSession = !!task.sharedLeadSession;
   try{
     const response = await fetch('/api/run', {
       method:'POST',
@@ -3673,6 +3703,7 @@ async function assignTask(floorId, title, note, options){
   const fw = floorWorkers(floorId);
   const floor = floors.find(item=>item.id===floorId) || {};
   const task = { id: uid('t'), title, note };
+  task.sharedLeadSession = !!options.sharedLeadSession;
   if(options.initiative) task.initiative = options.initiative;
   if(options.initiativeId) task.initiativeId = options.initiativeId;
   if(Array.isArray(options.pathClaims)) task.pathClaims=options.pathClaims;
@@ -3772,6 +3803,7 @@ function pantryMarkup(floor){
 
 function render(){
   renderOfficeSection();
+  renderTaskInputCards();
   const receptionDesc = document.querySelector('#receptionCard .reception-info .desc');
   if(receptionDesc){
     const activeReception = reception.inbox.filter(item=>['queued','analyzing'].includes(item.status));
@@ -3974,6 +4006,7 @@ function renderManagerCard(){
     : reviewing ? 'reviewing changes'
     : reporting ? 'researching report'
     : answering ? 'answering question'
+    : (floor.inbox || []).some(item=>item.status==='needs_input') ? 'Needs your input'
     : planning ? 'analyzing'
     : queuedCount ? `${queuedCount} queued` : 'ready';
   const reviewClass = onboarding || reviewing || reporting || answering || planning ? 'working' : (floor.onboardingStatus==='failed' || floor.reviewStatus==='issues' ? 'blocked' : 'idle');
@@ -5220,7 +5253,7 @@ function techLeadPrompt(floor, initiative, note){
       : 'For every workstream, return repositories as ["."].',
     'If knowledge owned by another floor is genuinely required, add a targeted floor_calls entry using its exact floor id. If the user explicitly names another floor or asks to use a detail, contract, decision, or context from it, you must request a call to that floor unless the exact requested information is already present in the supplied cross-floor directory. Combine related questions into one call per floor. Otherwise do not request unnecessary calls.',
     'Other floor repositories are context-only here. Do not plan edits outside this floor; reception must route implementation to every repository that needs changes.',
-    'Return the required structured decision, rationale, workstreams, and floor_calls. Do not modify files.'
+    'Use reasonable defaults for reversible decisions and list them in assumptions. Ask only for missing user decisions that materially change scope, outcome, or risk. Never ask again about information already supplied. If blocked, return decision needs_input, one to three concise questions with optional suggested options (recommended first), and empty workstreams and floor_calls. Otherwise return single or multi with workstreams, empty questions, assumptions, rationale and floor_calls. Do not modify files.'
   ].filter(Boolean).join('\n\n');
 }
 
@@ -5238,7 +5271,7 @@ async function enqueueFloorInitiative(floor, initiative, note, source, options={
   floor.inbox = Array.isArray(floor.inbox) ? floor.inbox : [];
   const request = {
     id:uid('request'), initiative, note:note || '', source:source || 'floor',
-    queuedAt:Date.now(), lastAttemptAt:0, status:'queued'
+    queuedAt:Date.now(), lastAttemptAt:0, status:'queued', clarificationGroup:options.clarificationGroup || null
   };
   floor.inbox.push(request);
   log(`${source || 'Floor'} queued "${initiative}" for ${floor.techLeadName} on ${floor.name}`);
@@ -5268,9 +5301,158 @@ function floorRequestNote(request){
   });
   return [
     request.note || '',
+    ...(request.clarificationHistory || []).map(item=>`User clarification:\n${item.question}\nAnswer: ${item.answer}`),
     answers.length ? `Inter-floor call results:\n\n${answers.join('\n\n')}` : '',
     failures.length ? `Unavailable inter-floor calls (plan conservatively around these gaps):\n${failures.join('\n')}` : ''
   ].filter(Boolean).join('\n\n');
+}
+
+async function finishTaskPlanning(floor, pending, result){
+  const request = (floor.inbox || []).find(item=>item.id===pending.requestId);
+  if(!request?.clarificationGroup){
+    floor.inbox = (floor.inbox || []).filter(item=>item.id!==pending.requestId);
+    await saveAll();
+    await applyTechLeadPlan(pending,result);
+    return;
+  }
+  request.status='planned';request.preparedPlan={pending,result};
+  await saveAll();
+  await releasePreparedTaskPlans();
+}
+
+let releasingPreparedTaskPlans = false;
+async function releasePreparedTaskPlans(){
+  if(releasingPreparedTaskPlans) return;
+  releasingPreparedTaskPlans=true;
+  try{
+  const groups = new Map();
+  for(const floor of floors) for(const request of floor.inbox || []){
+    if(!request.clarificationGroup) continue;
+    if(!groups.has(request.clarificationGroup)) groups.set(request.clarificationGroup,[]);
+    groups.get(request.clarificationGroup).push({floor,request});
+  }
+  for(const items of groups.values()){
+    if(items.some(({request})=>request.status!=='planned' || !request.preparedPlan)) continue;
+    for(const {floor,request} of items) floor.inbox=floor.inbox.filter(item=>item.id!==request.id);
+    await saveAll();
+    for(const {request} of items){
+      const {pending,result}=request.preparedPlan;
+      await applyTechLeadPlan(pending,result);
+    }
+  }
+  }finally{releasingPreparedTaskPlans=false;}
+}
+
+function taskInputGroups(){
+  const groups = new Map();
+  for(const floor of floors) for(const request of floor.inbox || []){
+    if(request.status!=='needs_input') continue;
+    const key = request.clarificationGroup || request.id;
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({floor, request});
+  }
+  return groups;
+}
+
+async function pauseForTaskInput(floor, pending, result){
+  let request = (floor.inbox || []).find(item=>item.id===pending.requestId);
+  if(request?.clarificationHistory?.length && pending.note!==floorRequestNote(request)){
+    request.status='queued';request.startedAt=null;request.lastAttemptAt=0;
+    await saveAll();render();
+    return true;
+  }
+  if(result.decision!=='needs_input') return false;
+  if(!request){
+    request = {...pending, id:pending.requestId || uid('request'), queuedAt:Date.now()};
+    floor.inbox = [...(floor.inbox || []), request];
+  }
+  request.status = 'needs_input';
+  request.clarificationQuestions = result.questions;
+  request.clarificationReason = result.reason || '';
+  request.clarificationDraft = {};
+  await saveAll();
+  render();
+  notifyOffice('Needs your input', `${floor.name}: ${request.initiative}`);
+  return true;
+}
+
+function renderTaskInputCards(){
+  let host = document.getElementById('taskInputCards');
+  if(!host){
+    host = document.createElement('section');
+    host.id = 'taskInputCards';
+    host.setAttribute('aria-label', 'Tasks needing your input');
+    document.getElementById('receptionCard').after(host);
+  }
+  const groups = taskInputGroups();
+  const signature = JSON.stringify([...groups].map(([key, items])=>[key, items.map(({floor,request})=>[floor.name,request.id,request.clarificationQuestions,request.clarificationReason])]));
+  if(host.dataset.signature===signature) return;
+  host.dataset.signature = signature;
+  host.replaceChildren();
+  for(const [key, items] of groups){
+    const card = document.createElement('form');
+    card.style.cssText = 'margin:12px 0;padding:16px;border:1px solid var(--border,#777);border-radius:8px;background:var(--surface,#fff);color:var(--text,#222)';
+    const heading = document.createElement('h3');
+    heading.textContent = `Needs your input · ${items[0].request.clarificationGroup ? 'Reception' : items[0].floor.name}`;
+    card.append(heading);
+    const fields = new Map();
+    for(const {floor,request} of items){
+      const summary = document.createElement('p');
+      summary.textContent = `${floor.name}: ${request.initiative}. ${request.clarificationReason}`;
+      card.append(summary);
+      for(const q of request.clarificationQuestions || []){
+        const normalized = q.question.trim().toLowerCase().replace(/\s+/g,' ');
+        if(fields.has(normalized)){ fields.get(normalized).owners.push({request,q}); continue; }
+        const label = document.createElement('label');
+        label.style.cssText = 'display:block;margin:12px 0';
+        const title = document.createElement('div'); title.textContent = q.question; label.append(title);
+        const input = document.createElement('textarea');
+        input.required = true; input.rows = 2; input.style.width = '100%';
+        input.setAttribute('aria-label', q.question);
+        input.value = (request.clarificationDraft || {})[q.question] || '';
+        const field = {input,owners:[{request,q}]}; fields.set(normalized,field);
+        const saveDraft = ()=>{
+          for(const owner of field.owners){
+            owner.request.clarificationDraft ||= {};
+            owner.request.clarificationDraft[owner.q.question] = input.value;
+          }
+          saveAll();
+        };
+        for(const option of q.options || []){
+          const button = document.createElement('button'); button.type = 'button'; button.textContent = option;
+          button.onclick = ()=>{input.value=option;saveDraft();input.focus();}; label.append(button);
+        }
+        input.oninput = saveDraft;
+        label.append(input);card.append(label);
+      }
+    }
+    const submit = document.createElement('button'); submit.type='submit'; submit.textContent='Continue';card.append(submit);
+    card.onsubmit = async event=>{
+      event.preventDefault();
+      if([...fields.values()].some(field=>!field.input.value.trim())) return;
+      submit.disabled=true;
+      try{ await continueTaskInput(key,[...fields.values()].map(field=>({question:field.owners[0].q.question,answer:field.input.value.trim()}))); }
+      finally{submit.disabled=false;}
+    };
+    host.append(card);
+  }
+}
+
+async function continueTaskInput(key, answers){
+  const items = taskInputGroups().get(key);
+  if(!items || !answers.length || answers.some(item=>!item.answer.trim())) return;
+  const now = Date.now();
+  // Share decisions with every still-queued route in this reception initiative.
+  for(const floor of floors) for(const request of floor.inbox || []){
+    if((request.clarificationGroup || request.id)!==key) continue;
+    request.clarificationHistory = [...(request.clarificationHistory || []), ...answers.map(item=>({...item,answeredAt:now}))];
+    if(['needs_input','planned'].includes(request.status)){
+      delete request.preparedPlan;
+      request.status='queued';request.startedAt=null;request.lastAttemptAt=0;
+      request.clarificationQuestions=[];request.clarificationDraft={};
+    }
+  }
+  await saveAll();render();dispatchAllFloorInboxes();
 }
 
 async function beginFloorConsultations(floor, pending, result){
@@ -5318,7 +5500,7 @@ async function dispatchFloorInbox(floorId){
   const floor = floors.find(item=>item.id===floorId);
   if(!floor || dispatchingFloors.has(floorId) || floor.onboardingStatus!=='ready') return;
   floor.inbox = Array.isArray(floor.inbox) ? floor.inbox : [];
-  const request = floor.inbox[0];
+  const request = floor.inbox.find(item=>!['needs_input','planned'].includes(item.status));
   if(request && request.status==='consulting'){
     if(await finishRequestConsultations(request)) dispatchFloorInbox(floorId);
     return;
@@ -5335,6 +5517,7 @@ async function dispatchFloorInbox(floorId){
     if(started){
       const pending = pendingLeadPlans.get(`lead:${floor.id}`);
       request.status = 'planning';
+      request.planningNote = pending && pending.note;
       request.startedAt = pending && pending.startedAt;
       request.taskStartedAt = request.taskStartedAt || request.startedAt || Date.now();
       if(pending) Object.assign(pending,{taskStartedAt:request.taskStartedAt,specPath:request.specPath,specRepository:request.specRepository,specPhaseId:request.specPhaseId,specIndex:request.specIndex,specPhaseIndex:request.specPhaseIndex});
@@ -5358,7 +5541,7 @@ async function recoverFloorIntake(floor, request){
         request.startedAt = data.startedAt;
         request.taskStartedAt = request.taskStartedAt || data.startedAt || Date.now();
         pendingLeadPlans.set(profileId, {
-          floorId:floor.id, initiative:request.initiative, note:floorRequestNote(request),
+          floorId:floor.id, initiative:request.initiative, note:request.planningNote ?? floorRequestNote(request),
           startedAt:data.startedAt, taskStartedAt:request.taskStartedAt,
           requestId:request.id, source:request.source || 'floor', specPath:request.specPath,
           specRepository:request.specRepository,specPhaseId:request.specPhaseId,
@@ -5366,15 +5549,14 @@ async function recoverFloorIntake(floor, request){
         });
       }else if(data.status==='completed' && data.result){
         const recovered = {
-          floorId:floor.id, initiative:request.initiative, note:floorRequestNote(request),
+          floorId:floor.id, initiative:request.initiative, note:request.planningNote ?? floorRequestNote(request),
           startedAt:data.startedAt, taskStartedAt:request.taskStartedAt || data.startedAt || Date.now(),
           requestId:request.id, source:request.source || 'floor'
         };
         Object.assign(recovered,{specPath:request.specPath,specRepository:request.specRepository,specPhaseId:request.specPhaseId,specIndex:request.specIndex,specPhaseIndex:request.specPhaseIndex});
+        if(await pauseForTaskInput(floor, recovered, data.result)) return;
         if(await beginFloorConsultations(floor, recovered, data.result)) return;
-        floor.inbox = floor.inbox.filter(item=>item.id!==request.id);
-        await saveAll();
-        await applyTechLeadPlan(recovered, data.result);
+        await finishTaskPlanning(floor, recovered, data.result);
       }else if(data.status==='failed' || data.status==='completed'){
         request.status = 'failed';
         request.failed = true;
@@ -5394,6 +5576,7 @@ async function recoverFloorIntake(floor, request){
 }
 
 function dispatchAllFloorInboxes(){
+  releasePreparedTaskPlans();
   for(const floor of floors) dispatchFloorInbox(floor.id);
 }
 
@@ -5749,6 +5932,8 @@ async function requestTechLeadPlan(floor, initiative, note, options){
 async function applyTechLeadPlan(pending, result){
   const floor = floors.find(f=>f.id===pending.floorId);
   if(!floor) return;
+  if(result.decision==='needs_input' || (result.questions || []).length) return;
+  pending.note = [pending.note, (result.assumptions || []).length ? `Planning assumptions:\n- ${result.assumptions.join('\n- ')}` : ''].filter(Boolean).join('\n\n');
   const streams = Array.isArray(result.workstreams) ? result.workstreams.filter(s=>s && s.title) : [];
   const useMultiple = result.decision==='multi' && streams.length>1;
   const employeeOnly = pending.source==='Live preview' || pending.source==='PR checks';
@@ -5760,6 +5945,7 @@ async function applyTechLeadPlan(pending, result){
     assignments:[], completedTaskIds:[], sharedSession:!useMultiple&&!employeeOnly, employeeOnly,
     managerNote:pending.note || '', planResult:result,
     requireManualReview:pending.source==='PR checks',
+    prFixUrl:pending.source==='PR checks' ? (String(pending.note || '').match(/^PR: (https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+)/m) || [])[1] : null,
     repositories:[...new Set(assignedStreams.flatMap(stream=>stream.repositories || []))],
     specPath:pending.specPath||null, specRepository:pending.specRepository||null,
     specPhaseId:pending.specPhaseId||null, specIndex:pending.specIndex,
@@ -5816,10 +6002,9 @@ async function syncLeadPlans(){
       }
       if(data.status==='completed' && data.result){
         pendingLeadPlans.delete(profileId);
+        if(floor && await pauseForTaskInput(floor, pending, data.result)) continue;
         if(floor && await beginFloorConsultations(floor, pending, data.result)) continue;
-        if(floor) floor.inbox = (floor.inbox || []).filter(item=>item.id!==pending.requestId);
-        await saveAll();
-        await applyTechLeadPlan(pending, data.result);
+        if(floor) await finishTaskPlanning(floor, pending, data.result);
       }else if(data.status==='failed' || (data.status==='completed' && !data.result)){
         pendingLeadPlans.delete(profileId);
         const floor = floors.find(item=>item.id===pending.floorId);
@@ -6323,16 +6508,30 @@ async function setPrMonitoring(enabled){
 }
 
 function renderPrChecks(floor){
+  document.getElementById('reviewMonitorChecks').checked = !!floor.monitorPrChecks;
+  document.getElementById('prChecksEnabled').checked = !!floor.monitorPrChecks;
   const html = (floor.prMonitors || []).map((monitor,index)=>{
     const data = monitor.result;
-    return `<div><b>${escapeHtml(monitor.url)}</b><p>${escapeHtml(monitor.error || (data ? `${data.state}: ${data.status}` : 'Waiting for first check'))}${monitor.enabled?'':' (monitoring off)'}</p>
-      ${data && data.status==='failed' ? `<pre style="white-space:pre-wrap">${escapeHtml(data.failures.map(item=>`${item.name}: ${item.status}\n${item.url}`).join('\n'))}</pre>
-      <p>${escapeHtml(data.suggestionNote)}</p><ul>${data.suggestions.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul>
-      <details><summary>Failed-job evidence</summary><pre style="white-space:pre-wrap;max-height:240px;overflow:auto">${escapeHtml(data.evidence || 'No logs available. Inspect the failed job on GitHub.')}</pre>${escapeHtml((data.logErrors || []).join('\n'))}</details>
-      <button onclick="approvePrFix(${index})" ${monitor.fixRequested===monitor.failureKey || monitor.approving || monitor.error || data.state!=='OPEN'?'disabled':''}>${monitor.fixRequested===monitor.failureKey?'Employee fix queued':'Assign fix to employees…'}</button>`:''}</div>`;
-  }).join('');
+    const checks = data && (data.checks || data.failures) || [];
+    return `<section class="pr-check-card"><b>${prCheckLink(monitor.url, data?.title || monitor.url)}</b>${data?.title?`<div>${prCheckLink(monitor.url,monitor.url)}</div>`:''}
+      <p role="status">${escapeHtml(monitor.error || (data ? `${data.state}: ${data.status}` : 'Waiting for first check'))}${monitor.enabled?'':' (monitoring off)'}</p>
+      ${checks.length ? `<ul class="pr-check-list" aria-label="PR checks">${checks.map(item=>{
+        const status=String(item.status || 'UNKNOWN');
+        const tone=['SUCCESS','NEUTRAL','SKIPPED'].includes(status)?'success':['FAILURE','ERROR','TIMED_OUT','CANCELLED','ACTION_REQUIRED','STARTUP_FAILURE','STALE'].includes(status)?'failure':'pending';
+        return `<li class="pr-check-row"><span class="pr-check-name">${prCheckLink(item.url,item.name || 'Unnamed check')}</span><span class="pr-check-status" data-tone="${tone}">${escapeHtml(status.replace(/_/g,' '))}</span></li>`;
+      }).join('')}</ul>` : `<p>${data?'No checks reported by GitHub yet.':'Check names and results will appear after the first poll.'}</p>`}
+      ${data && data.status==='failed' ? `<p>${escapeHtml(data.suggestionNote)}</p><ul>${data.suggestions.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul>
+      <details><summary>Failed-job evidence</summary><pre class="pr-check-evidence">${escapeHtml(data.evidence || 'No logs available. Inspect the failed job on GitHub.')}</pre>${escapeHtml((data.logErrors || []).join('\n'))}</details>
+      <button onclick="approvePrFix(${index})" ${monitor.fixRequested===monitor.failureKey || monitor.approving || monitor.error || data.state!=='OPEN'?'disabled':''}>${monitor.fixRequested===monitor.failureKey?'Employee fix queued':'Assign fix to employees…'}</button>`:''}</section>`;
+  }).join('') || '<p>Published PRs will appear here after you create a pull request.</p>';
   document.getElementById('reviewPrChecks').innerHTML = html;
   document.getElementById('prChecksHistory').innerHTML = html;
+}
+
+function prCheckLink(url,label){
+  // Check providers supply these URLs; never turn executable schemes into links.
+  if(!/^https?:\/\/[^\s]+$/i.test(String(url || ''))) return escapeHtml(label);
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
 }
 
 let checkingPrs = false;
@@ -6392,6 +6591,55 @@ async function approvePrFix(index){
   }finally{ delete monitor.approving; renderPrChecks(floor); }
 }
 
+function reviewPrFixUrl(floor){
+  const tracker=(floor.multiInitiatives || []).find(item=>item.id===floor.reviewTrackerId);
+  if(!tracker?.requireManualReview) return null;
+  // Backfill fixes approved before structured PR targets were recorded.
+  return tracker.prFixUrl || (String(tracker.managerNote || '').match(/^PR: (https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+)/m) || [])[1] || null;
+}
+
+async function publishPrFix(floor,url){
+  const status=document.getElementById('reviewPublishStatus');
+  const button=document.getElementById('publishReviewButton');
+  const title=document.getElementById('reviewPrTitle').value.trim();
+  const selections=reviewSelections();
+  const selected=Object.entries(selections).filter(([,selection])=>selection.accepted.length);
+  if(!title || selected.length!==1){status.textContent='Enter a commit title and select changes from exactly one repository for this PR.';return;}
+  const [key,selection]=selected[0];
+  const repo=reviewDiffData.find(item=>item.key===key);
+  if(!repo){status.textContent='Reload the diff before publishing.';return;}
+  button.disabled=true;
+  try{
+    const payload={pullRequest:url,repository:{mode:'local',path:repo.repository},selection,title};
+    const targetResponse=await fetch('/api/pr-fix-target',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const target=await targetResponse.json();
+    if(!targetResponse.ok) throw new Error(target.error || 'Could not verify existing PR');
+    document.getElementById('reviewBranch').value=target.branch;
+    document.getElementById('reviewDestinationBranch').value=target.destinationBranch;
+    const result=floor.reviewResult;
+    const issues=(result.issues || []).filter(Boolean);
+    const override=!result.ready || issues.length ? (issues.join('\n') || result.summary || 'Review not approved') : '';
+    if(!window.confirm(`Push selected fixes to existing PR ${url}?\n\nSource branch: ${target.branch}\nExpected head: ${target.head}\n\nOnly selected changes will be committed. No new branch or PR will be created. No force push or merge.${override?'\n\nOverride unresolved review findings (recorded in the commit):\n'+override:''}`)) return;
+    status.textContent='Committing selected fix and updating the existing PR branch…';
+    const response=await fetch('/api/push-pr-fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,expectedHead:target.head,reviewOverride:override})});
+    const data=await response.json();
+    if(!response.ok) throw new Error(data.error || 'Push failed');
+    floor.reviewStatus='published';
+    floor.reviewResult.pullRequest=url;
+    const tracker=(floor.multiInitiatives || []).find(item=>item.id===floor.reviewTrackerId);
+    if(tracker) tracker.reviewStatus='published';
+    trackPublishedPrs(floor);
+    const monitor=floor.prMonitors.find(item=>item.url===url);
+    if(monitor){monitor.checkedAt=0;delete monitor.result;delete monitor.error;}
+    await saveAll();render();renderPrChecks(floor);
+    status.innerHTML=`Updated existing PR: ${prCheckLink(url,url)}`;
+    button.hidden=true;
+    log(`Pushed reviewed CI fix to ${target.branch}; updated ${url}`);
+    syncPrChecks();
+  }catch(e){status.textContent=`Push stopped: ${e.message || e}`;}
+  finally{button.disabled=false;}
+}
+
 function openReviewModal(floorId){
   const floor = floors.find(f=>f.id===floorId);
   if(!floor || !floor.reviewResult) return;
@@ -6426,6 +6674,24 @@ function openReviewModal(floorId){
   button.hidden = published;
   button.textContent = blocked ? 'Push anyway & create PR' : 'Push branch & create PR';
   button.disabled = false;
+  const existingPr=reviewPrFixUrl(floor);
+  document.getElementById('reviewPublishWarning').textContent=existingPr
+    ? 'Commit selected fixes to the existing PR source branch and push to origin. No new branch, new PR, force push, or merge. Unselected changes stay local.'
+    : 'Commit selected changes, push the source branch, and create a pull request. Publishing with blockers requires explicit confirmation.';
+  document.getElementById('reviewBranch').readOnly=!!existingPr;
+  document.getElementById('reviewDestinationBranch').readOnly=!!existingPr;
+  document.getElementById('reviewPrBody').readOnly=!!existingPr;
+  if(existingPr && !published){
+    button.textContent=blocked?'Push fix anyway to existing PR':'Push fix to existing PR';
+    document.getElementById('reviewBranch').value='Existing PR source branch (verified before push)';
+    document.getElementById('reviewPrTitle').value=result.pr_title || 'Fix failing PR checks';
+    document.getElementById('reviewPrBody').value='Updates the existing PR; no new PR or description change. Any review override is recorded in the fix commit.';
+    document.getElementById('reviewPublishStatus').innerHTML=`Update existing PR: ${prCheckLink(existingPr,existingPr)}. Source branch and remote head are verified before confirmation.`;
+  }
+  if(published){
+    const urls=[result.pullRequest,...(result.pullRequests || [])].filter(Boolean);
+    if(urls.length) document.getElementById('reviewPublishStatus').innerHTML = `Pull request created: ${urls.map(url=>prCheckLink(url,url)).join(', ')}`;
+  }
   document.getElementById('reviewModalBackdrop').classList.add('open');
   loadReviewDiffs(floor);
 }
@@ -6442,6 +6708,8 @@ async function publishReviewedChanges(){
   if(!floor || !floor.reviewResult || ['published','pushed'].includes(floor.reviewStatus)
     || floor.reviewResult.pullRequest || (floor.reviewResult.pullRequests || []).length) return;
   if(document.getElementById('publishReviewButton').disabled) return;
+  const existingPr=reviewPrFixUrl(floor);
+  if(existingPr) return publishPrFix(floor,existingPr);
   const issues = Array.isArray(floor.reviewResult.issues) ? floor.reviewResult.issues.filter(Boolean) : [];
   const blocked = !floor.reviewResult.ready || issues.length>0;
   const branch = document.getElementById('reviewBranch').value.trim();
@@ -6494,7 +6762,7 @@ async function publishReviewedChanges(){
     const created = floor.hasCupboards
       ? (data.repositories || []).map(item=>`${item.name}: ${item.pullRequest}`).join('\n')
       : data.pullRequest;
-    status.textContent = `Created ${created}`;
+    status.innerHTML = `Created ${(floor.hasCupboards ? (data.repositories || []).map(item=>item.pullRequest) : [data.pullRequest]).map(url=>prCheckLink(url,url)).join(', ')}`;
     log(`Published ${data.branch} and created ${floor.hasCupboards ? (data.repositories || []).length+' pull requests' : 'pull request '+data.pullRequest}`);
     render();
   }catch(e){
@@ -6773,7 +7041,7 @@ async function syncReception(){
       for(const route of routes){
         const floor = floors.find(item=>item.id===route.floor_id);
         const note = [request.note, route.note, `Why Pam routed this here: ${route.reason || data.result.reason}`, `Reception routing rationale: ${data.result.reason}`, `Related floor routes:\n${routingSummary}`, `Cross-floor initiative: ${receptionInitiativeId}`].filter(Boolean).join('\n\n');
-        await enqueueFloorInitiative(floor, route.title || request.title, note, 'Pam', {deferSave:true});
+        await enqueueFloorInitiative(floor, route.title || request.title, note, 'Pam', {deferSave:true, clarificationGroup:receptionInitiativeId});
       }
       request.status = 'completed';
       request.result = data.result;
